@@ -1,0 +1,877 @@
+---
+title: "Resistance GLM"
+author: "Katelynn"
+date: "2024-04-01"
+output: html_document
+---
+
+I want to be able to assess how each variable responds to extreme climatic events using resistance measures. I want to know if the resistance of each lake variable is more correlated to:
+
+- Antecedent conditions
+- Storm Charactertics
+- Combination of both
+
+I will do so using model AIC and variability explained within a generalized linear model. Variables that are not normally distributed with be standardized prior to incorporating into the model.
+
+# Phycocyanin
+
+## Setting up the Data. 
+```{r}
+library(tidymv)
+library(mgcv)
+
+PC_RS_GLM <- PC_RS_Stat %>%
+  mutate(PC_RS = RS) %>%
+  dplyr::select(Event, Start.Date, End.Date, PC_RS, Site, Ant_PC_K)
+
+Chl_RS_GLM <- Chl_RS_Stat %>%
+  mutate(Chl_RS = RS) %>%
+  dplyr::select(Event, Start.Date, End.Date, Chl_RS, Site, Ant_Chl_K)
+
+SS_RS_GLM <- SS_RS_Stat %>%
+  mutate(SS_RS = RS) %>%
+  dplyr::select(Event, Start.Date, End.Date, SS_RS, Site, Ant_SS_K)
+
+ET_RS_GLM <- ET_RS_Stat %>%
+  mutate(ET_RS = RS) %>%
+  dplyr::select(Event, Start.Date, End.Date, ET_RS, Site, Ant_ET_K)
+
+TB_RS_GLM <- TB_RS_Stat %>%
+  mutate(TB_RS = RS) %>%
+  dplyr::select(Event, Start.Date, End.Date, TB_RS, Site, Ant_TB_K)
+
+RS_GLM <- full_join(PC_RS_GLM, Chl_RS_GLM) %>%
+  full_join(., SS_RS_GLM) %>%
+  full_join(., ET_RS_GLM) %>%
+  full_join(., TB_RS_GLM) %>%
+  na.omit()
+
+```
+
+## Checking Distribution and Standardizing
+
+```{r}
+shapiro.test(RS_GLM$PC_RS)
+
+shapiro.test(RS_GLM$Ant_PC_K)
+
+shapiro.test(RS_GLM$Ant_SS_K)
+
+shapiro.test(RS_GLM$Ant_ET_K)
+
+shapiro.test(RS_GLM$Ant_Chl_K)
+
+shapiro.test(RS_GLM$Ant_TB_K)
+
+```
+All of these are non-normal and need to be standardized prior to running in our model. 
+
+
+```{r}
+SA_PC_GLM <- RS_GLM %>%
+  ungroup() %>%
+  filter(Site == "SA") %>%
+  dplyr::select(PC_RS, Ant_PC_K, Ant_Chl_K, Ant_SS_K, Ant_ET_K, Ant_TB_K) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+## Antecedent Conditions
+
+### St. Albans Bay
+```{r}
+
+library(mgcv)
+
+SA_PC_Ant_GAM <- gam(PC_RS ~ s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_ET_K) + s(Ant_TB_K), data=SA_PC_GLM)
+summary(SA_PC_Ant_GAM)
+
+AIC(SA_PC_Ant_GAM)
+```
+
+From the summary, the model AIC is 107.25, and the only significant variable in explaining the resistance of phycocyanin is epilimnion temperature.
+
+Plot Residuals: 
+```{r}
+
+SA_PC_ET <- plot_smooths(PC_GLM_Mod, series = Ant_ET_K) +
+  theme_classic()
+
+```
+The residuals here look pretty good. There doesn't seem to be a clear pattern in the residual plot.
+
+### Missisquoi Bay
+
+```{r}
+MB_PC_GLM <- RS_GLM %>%
+  ungroup() %>%
+  filter(Site == "MB") %>%
+  dplyr::select(PC_RS, Ant_PC_K, Ant_Chl_K, Ant_SS_K, Ant_ET_K, Ant_TB_K) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+```{r}
+
+MB_PC_Ant_GAM <- gam(PC_RS ~ s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_ET_K) + s(Ant_TB_K), data=MB_PC_GLM)
+summary(MB_PC_Ant_GAM)
+
+AIC(MB_PC_Ant_GAM)
+
+gam.check(MB_PC_Ant_GAM)
+
+```
+
+#### Plotting the GAM
+
+```{r}
+
+mgcv::plot.gam(MB_PC_Ant_GAM, shade=TRUE, shift=coef(PC_GLM_Mod)[1], rug=TRUE, residuals = TRUE)
+
+```
+
+```{r}
+
+install.packages("tidygam")
+library(tidygam)
+
+mgcv::plot.gam(PC_GLM_Mod, shade=TRUE, shift=coef(PC_GLM_Mod)[1])
+
+MB_PC_TB <- plot_smooths(PC_GLM_Mod, series = Ant_TB_K) +
+  theme_classic()
+MB_PC_SS <- plot_smooths(PC_GLM_Mod, series = Ant_SS_K) +
+  theme_classic()
+
+
+
+```
+
+
+## Storm Characteristics
+
+For this section, we need to grab the median weather characteristics for each event. We definitely have this data somewhere.
+```{r}
+SA_Temp_GLM <- SA_Temp %>%
+  ungroup()%>%
+  dplyr::select(Date, Avg_Temp)
+
+SA_Wind_GLM <- SA_Wind %>%
+  ungroup()%>%
+  dplyr::select(Date, Wind_Speed)
+
+SA_SF_GLM <- SA_SF %>%
+  ungroup()%>%
+  dplyr::select(Date, Sum_SF)
+
+SA_Met_GLM <- left_join(SA_Dist_Final, SA_Temp_GLM, by="Date") %>%
+  left_join(., SA_Wind_GLM, by="Date") %>%
+  left_join(., SA_SF_GLM, by="Date") %>%
+  dplyr::select(Date, Start.Date, End.Date, Event, Avg_Temp, Wind_Speed, Sum_SF) %>%
+  group_by(Start.Date, End.Date, Event) %>%
+  dplyr::summarise(Avg_Temp = mean(Avg_Temp),
+                   Avg_Wind = mean(Wind_Speed),
+                   Avg_SF = mean(Sum_SF)) %>%
+  mutate(Site = "SA")
+
+SA_Met_GLM_Dat <- full_join(SA_Met_GLM, RS_GLM, by=c("Start.Date", "End.Date", "Event")) %>%
+  na.omit()
+
+
+```
+
+Running the St. Albans Model. 
+
+
+## Checking Distribution and Standardizing
+
+```{r}
+shapiro.test(SA_Met_GLM$PC_RS)
+
+shapiro.test(SA_Met_GLM$Avg_Wind)
+
+shapiro.test(SA_Met_GLM$Avg_Temp)
+
+shapiro.test(SA_Met_GLM$Avg_SF)
+
+```
+All of these are non-normal and need to be standardized prior to running in our model. 
+
+
+```{r}
+SA_Met_GLM <- SA_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(PC_RS, Avg_Wind, Avg_Temp, Avg_SF) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+
+```{r}
+library(mgcv)
+
+SA_PC_Met_GAM <- gam(PC_RS ~ s(Avg_Wind) + s(Avg_Temp) + s(Avg_SF), data=SA_Met_GLM)
+summary(SA_PC_Met_GAM)
+
+plot(SA_PC_Met_GAM)
+
+AIC(SA_PC_Met_GAM)
+```
+
+### Missisquoi Bay
+
+For this section, we need to grab the median weather characteristics for each event. We definitely have this data somewhere.
+```{r}
+MB_Temp_GLM <- MB_Temp %>%
+  ungroup()%>%
+  dplyr::select(Date, Avg_Temp)
+
+MB_Wind_GLM <- MB_Wind %>%
+  ungroup()%>%
+  dplyr::select(Date, Wind_Speed)
+
+MB_SF_GLM <- MB_SF %>%
+  ungroup()%>%
+  dplyr::select(Date, Sum_SF)
+
+MB_Met_GLM <- left_join(MB_Dist_Final, MB_Temp_GLM, by="Date") %>%
+  left_join(., MB_Wind_GLM, by="Date") %>%
+  left_join(., MB_SF_GLM, by="Date") %>%
+  dplyr::select(Date, Start.Date, End.Date, Event, Avg_Temp, Wind_Speed, Sum_SF) %>%
+  group_by(Start.Date, End.Date, Event) %>%
+  dplyr::summarise(Avg_Temp = mean(Avg_Temp),
+                   Avg_Wind = mean(Wind_Speed),
+                   Avg_SF = mean(Sum_SF)) %>%
+  mutate(Site = "MB")
+
+MB_Met_GLM_Dat <- full_join(MB_Met_GLM, RS_GLM, by=c("Start.Date", "End.Date", "Event")) %>%
+  na.omit()
+
+
+```
+
+## Checking Distribution and Standardizing
+
+```{r}
+MB_Met_GLM <- MB_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(PC_RS, Avg_Wind, Avg_Temp, Avg_SF) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+
+```{r}
+MB_PC_Met_GAM <- gam(PC_RS ~ s(Avg_Wind) + s(Avg_Temp) + s(Avg_SF), data=MB_Met_GLM)
+summary(MB_PC_Met_GAM)
+AIC(MB_PC_Met_GAM)
+
+```
+
+Average Wind speeds are significant in determining Phycocyanin resistance in missisquoi Bay. 
+
+
+## Combined 
+
+### St. Albans
+
+```{r}
+SA_Comb_GLM <- SA_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(-Start.Date, -End.Date, -Event, -Site.x, -Site.y, -Event_ID) %>%
+  #scale() %>%
+  as.data.frame()
+
+
+
+SA_PC_Com_GAM <- gam(PC_RS ~ s(Avg_Wind) + s(Ant_ET_K) + s(Avg_Temp) + s(Avg_SF) + s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_TB_K), data=SA_Comb_GLM, family = "gaussian")
+
+summary(SA_PC_Com_GAM)
+
+AIC(SA_PC_Com_GAM)
+
+```
+
+
+### Miss Bay
+```{r}
+MB_Comb_GLM <- MB_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(-Start.Date, -End.Date, -Event, -Site.x, -Site.y, -Event_ID) %>%
+  #scale() %>%
+  as.data.frame()
+
+
+MB_PC_Com_GAM <- gam(PC_RS ~ s(Avg_Wind) + s(Avg_Temp) + s(Avg_SF) + s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_ET_K) + s(Ant_TB_K), data=MB_Comb_GLM, family = "gaussian")
+
+summary(MB_PC_Com_GAM)
+
+AIC(MB_PC_Com_GAM)
+
+```
+None of these are significant in this model. 
+
+
+# Visualing the relationships
+
+```{r}
+SA_Comb_GLM %>%
+  ggplot(aes(x=Ant_ET_K, y=PC_RS)) +
+  geom_point()+
+  theme_minimal()
+
+```
+
+
+```{r}
+MB_Comb_GLM %>%
+  ggplot(aes(x=Avg_Wind, y=PC_RS)) +
+  geom_point()+
+  theme_minimal()
+
+```
+
+Under High wind speeds during extreme climatic events, Missisquoi Bay phycocyanin revealed high resistance. This is likely because the most change in phycocyanin in Missisquoi Bay occurrs during periods of low wind and stable conditions, suggesting negative resistance as there is a large change from antecedent phycocyanin. 
+
+
+
+#################################################################################
+# Chlorophyll 
+
+
+```{r}
+SA_CHL_GLM <- RS_GLM %>%
+  ungroup() %>%
+  filter(Site == "SA") %>%
+  dplyr::select(Chl_RS, Ant_PC_K, Ant_Chl_K, Ant_SS_K, Ant_ET_K, Ant_TB_K) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+## Antecedent Conditions
+
+### St. Albans Bay
+```{r}
+SA_Chl_Ant_GAM <- gam(Chl_RS ~ s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_ET_K) + s(Ant_TB_K), data=SA_CHL_GLM)
+summary(SA_Chl_Ant_GAM)
+
+AIC(SA_Chl_Ant_GAM)
+
+```
+From the summary, the model AIC is 107.25, and the only significant variable in explaining the resistance of phycocyanin is epilimnion temperature.
+
+Plot Residuals: 
+```{r}
+
+plot(SA_Chl_Ant_GAM)
+```
+The residuals here look pretty good. There doesn't seem to be a clear pattern in the residual plot.
+
+### Missisquoi Bay
+
+```{r}
+MB_CHL_GAM <- RS_GLM %>%
+  ungroup() %>%
+  filter(Site == "MB") %>%
+  dplyr::select(Chl_RS, Ant_PC_K, Ant_Chl_K, Ant_SS_K, Ant_ET_K, Ant_TB_K) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+```{r}
+MB_Chl_Ant_GAM <- gam(Chl_RS ~ s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_ET_K) + s(Ant_TB_K), data=MB_CHL_GAM)
+summary(MB_Chl_Ant_GAM)
+
+AIC(MB_Chl_Ant_GAM)
+
+```
+
+
+```{r}
+
+MB_CHL_TB <- plot_smooths(CHL_GAM_Mod, series = Ant_TB_K) +
+  theme_classic()
+
+```
+
+
+## Storm Characteristics
+
+## Checking Distribution and Standardizing
+
+```{r}
+SA_Met_GLM <- SA_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(Chl_RS, Avg_Wind, Avg_Temp, Avg_SF) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+
+```{r}
+SA_Chl_Met_GAM <- gam(Chl_RS ~ s(Avg_Wind) + s(Avg_Temp) + s(Avg_SF), data=SA_Met_GLM)
+summary(SA_Chl_Met_GAM)
+
+plot(SA_Chl_Met_GAM)
+
+AIC(SA_Chl_Met_GAM)
+```
+
+### Missisquoi Bay
+
+## Checking Distribution and Standardizing
+
+```{r}
+MB_Met_GLM <- MB_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(Chl_RS, Avg_Wind, Avg_Temp, Avg_SF) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+
+```{r}
+MB_Chl_Met_GAM <- gam(Chl_RS ~ s(Avg_Wind) + s(Avg_Temp) + s(Avg_SF), data=MB_Met_GLM)
+summary(MB_Chl_Met_GAM)
+AIC(MB_Chl_Met_GAM)
+
+```
+
+Average Wind speeds are significant in determining Phycocyanin resistance in missisquoi Bay. 
+
+
+## Combined 
+
+### St. Albans
+
+```{r}
+SA_Comb_GLM <- SA_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(-Start.Date, -End.Date, -Event, -Site.x, -Site.y, -Event_ID) %>%
+  #scale() %>%
+  as.data.frame()
+
+
+SA_Chl_Com_GAM <- gam(Chl_RS ~ s(Avg_Wind) + s(Ant_ET_K) + s(Avg_Temp) + s(Avg_SF) + s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_TB_K), data=SA_Comb_GLM)
+
+summary(SA_Chl_Com_GAM)
+
+AIC(SA_Chl_Com_GAM)
+
+```
+
+
+### Miss Bay
+```{r}
+MB_Comb_GLM <- MB_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(-Start.Date, -End.Date, -Event, -Site.x, -Site.y, -Event_ID) %>%
+  #scale() %>%
+  as.data.frame()
+
+
+MB_Chl_Com_GAM <- gam(Chl_RS ~ s(Avg_Wind) + s(Avg_Temp) + s(Avg_SF) + s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_ET_K) + s(Ant_TB_K), data=MB_Comb_GLM)
+
+summary(MB_Chl_Com_GAM)
+
+AIC(MB_Chl_Com_GAM)
+
+```
+
+
+#################################################################################
+# Schmidt Stability
+
+
+```{r}
+SA_SS_GLM <- RS_GLM %>%
+  ungroup() %>%
+  filter(Site == "SA") %>%
+  dplyr::select(SS_RS, Ant_PC_K, Ant_Chl_K, Ant_SS_K, Ant_ET_K, Ant_TB_K) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+## Antecedent Conditions
+
+### St. Albans Bay
+```{r}
+SA_SS_Ant_GAM <- gam(SS_RS ~ s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_ET_K) + s(Ant_TB_K), data=SA_SS_GLM)
+summary(SA_SS_Ant_GAM)
+
+AIC(SA_SS_Ant_GAM)
+
+```
+From the summary, the model AIC is 107.25, and the only significant variable in explaining the resistance of phycocyanin is epilimnion temperature.
+
+Plot Residuals: 
+```{r}
+
+plot(SA_SS_Ant_GAM)
+```
+The residuals here look pretty good. There doesn't seem to be a clear pattern in the residual plot.
+
+### Missisquoi Bay
+
+```{r}
+MB_SS_GAM <- RS_GLM %>%
+  ungroup() %>%
+  filter(Site == "MB") %>%
+  dplyr::select(SS_RS, Ant_PC_K, Ant_Chl_K, Ant_SS_K, Ant_ET_K, Ant_TB_K) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+```{r}
+MB_SS_Ant_GAM <- gam(SS_RS ~ s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_ET_K) + s(Ant_TB_K), data=MB_SS_GAM)
+summary(MB_SS_Ant_GAM)
+
+AIC(MB_SS_Ant_GAM)
+
+```
+
+```{r}
+
+MB_SS_TB <- plot_smooths(MB_SS_Ant_GAM, series = Ant_TB_K) +
+  theme_classic()
+
+```
+
+## Storm Characteristics
+
+
+## Checking Distribution and Standardizing
+
+```{r}
+SA_Met_GLM <- SA_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(SS_RS, Avg_Wind, Avg_Temp, Avg_SF) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+
+```{r}
+
+SA_SS_Met_GAM <- gam(SS_RS ~ s(Avg_Wind) + s(Avg_Temp) + s(Avg_SF), data=SA_Met_GLM)
+summary(SA_SS_Met_GAM)
+
+plot(SA_SS_Met_GAM)
+
+AIC(SA_SS_Met_GAM)
+```
+
+### Missisquoi Bay
+
+
+```{r}
+MB_Met_GLM <- MB_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(SS_RS, Avg_Wind, Avg_Temp, Avg_SF) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+
+```{r}
+MB_SS_Met_GLM <- gam(SS_RS ~ s(Avg_Wind) + s(Avg_Temp) + s(Avg_SF), data=MB_Met_GLM)
+summary(MB_SS_Met_GLM)
+AIC(MB_SS_Met_GLM)
+
+```
+
+
+## Combined 
+
+### St. Albans
+
+```{r}
+SA_Comb_GLM <- SA_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(-Start.Date, -End.Date, -Event, -Site.x, -Site.y, -Event_ID) %>%
+  #scale() %>%
+  as.data.frame()
+
+
+SA_SS_Com_GAM <- gam(SS_RS ~ s(Avg_Wind) + s(Ant_ET_K) + s(Avg_Temp) + s(Avg_SF) + s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_TB_K), data=SA_Comb_GLM)
+
+summary(SA_SS_Com_GAM)
+
+AIC(SA_SS_Com_GAM)
+
+```
+
+
+```{r}
+SA_SS_SS <- plot_smooths(SS_GLM_Mod, series = Ant_SS_K) +
+  theme_classic()
+
+SA_SS_ET <- plot_smooths(SS_GLM_Mod, series = Ant_ET_K) +
+  theme_classic()
+
+SA_SS_Wind <- plot_smooths(SS_GLM_Mod, series = Avg_Wind) +
+  theme_classic()
+
+```
+
+### Miss Bay
+```{r}
+MB_Comb_GLM <- MB_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(-Start.Date, -End.Date, -Event, -Site.x, -Site.y, -Event_ID) %>%
+  #scale() %>%
+  as.data.frame()
+
+MB_SS_Com_GAM <- gam(SS_RS ~ s(Avg_Wind) + s(Avg_Temp) + s(Avg_SF) + s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_ET_K) + s(Ant_TB_K), data=MB_Comb_GLM)
+
+summary(MB_SS_Com_GAM)
+
+AIC(MB_SS_Com_GAM)
+
+```
+
+#################################################################################
+# Epilimnion Temperature
+
+```{r}
+SA_ET_GLM <- RS_GLM %>%
+  ungroup() %>%
+  filter(Site == "SA") %>%
+  dplyr::select(ET_RS, Ant_PC_K, Ant_Chl_K, Ant_SS_K, Ant_ET_K, Ant_TB_K) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+## Antecedent Conditions
+
+### St. Albans Bay
+```{r}
+SA_ET_Ant_GAM <- gam(ET_RS ~ s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_ET_K) + s(Ant_TB_K), data=SA_ET_GLM)
+
+summary(SA_ET_Ant_GAM)
+
+AIC(SA_ET_Ant_GAM)
+
+```
+
+
+### Missisquoi Bay
+
+```{r}
+MB_ET_GAM <- RS_GLM %>%
+  ungroup() %>%
+  filter(Site == "MB") %>%
+  dplyr::select(ET_RS, Ant_PC_K, Ant_Chl_K, Ant_SS_K, Ant_ET_K, Ant_TB_K) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+```{r}
+MB_ET_Ant_GAM <- gam(ET_RS ~ s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_ET_K) + s(Ant_TB_K), data=MB_ET_GAM)
+summary(MB_ET_Ant_GAM)
+
+AIC(MB_ET_Ant_GAM)
+
+```
+
+## Storm Characteristics
+
+
+## Checking Distribution and Standardizing
+
+```{r}
+SA_Met_GLM <- SA_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(ET_RS, Avg_Wind, Avg_Temp, Avg_SF) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+
+```{r}
+SA_ET_Met_GAM <- gam(ET_RS ~ s(Avg_Wind) + s(Avg_Temp) + s(Avg_SF), data=SA_Met_GLM)
+summary(SA_ET_Met_GAM)
+
+plot(SA_ET_Met_GAM)
+
+AIC(SA_ET_Met_GAM)
+```
+
+### Missisquoi Bay
+
+
+```{r}
+MB_Met_GLM <- MB_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(ET_RS, Avg_Wind, Avg_Temp, Avg_SF) %>%
+  #scale() %>%
+  as.data.frame()
+
+```
+
+
+```{r}
+MB_ET_Met_GAM <- gam(ET_RS ~ s(Avg_Wind) + s(Avg_Temp) + s(Avg_SF), data=MB_Met_GLM)
+summary(MB_ET_Met_GAM)
+AIC(MB_ET_Met_GAM)
+
+```
+
+
+## Combined 
+
+### St. Albans
+
+```{r}
+SA_Comb_GLM <- SA_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(-Start.Date, -End.Date, -Event, -Site.x, -Site.y, -Event_ID) %>%
+  #scale() %>%
+  as.data.frame()
+
+
+SA_ET_Com_GAM <- gam(ET_RS ~ s(Avg_Wind) + s(Ant_ET_K) + s(Avg_Temp) + s(Avg_SF) + s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_TB_K), data=SA_Comb_GLM)
+
+summary(SA_ET_Com_GAM)
+
+AIC(SA_ET_Com_GAM)
+
+```
+
+
+```{r}
+
+SA_ET_SS <- plot_smooths(ET_GLM_Mod, series = Ant_SS_K) +
+    theme_classic()
+
+SA_ET_Temp <- plot_smooths(ET_GLM_Mod, series = Avg_Temp) +
+  theme_classic()
+
+SA_ET_SF <- plot_smooths(ET_GLM_Mod, series = Avg_SF) +
+  theme_classic()
+
+```
+
+### Miss Bay
+```{r}
+MB_Comb_GLM <- MB_Met_GLM_Dat %>%
+  ungroup() %>%
+  dplyr::select(-Start.Date, -End.Date, -Event, -Site.x, -Site.y, -Event_ID) %>%
+  #scale() %>%
+  as.data.frame()
+
+MB_ET_Com_GAM <- gam(ET_RS ~ s(Avg_Wind) + s(Avg_Temp) + s(Avg_SF) + s(Ant_PC_K) + s(Ant_Chl_K) + s(Ant_SS_K) + s(Ant_ET_K) + s(Ant_TB_K), data=MB_Comb_GLM)
+
+summary(MB_ET_Com_GAM)
+
+AIC(MB_ET_Com_GAM)
+
+```
+
+
+```{r}
+
+MB_ET_SS <- plot_smooths(ET_GLM_Mod, series = Ant_SS_K) +
+    theme_classic()
+
+MB_ET_Temp <- plot_smooths(ET_GLM_Mod, series = Avg_Temp) +
+  theme_classic()
+
+MB_ET_SF <- plot_smooths(ET_GLM_Mod, series = Avg_SF) +
+  theme_classic()
+
+MB_ET_ET <- plot_smooths(ET_GLM_Mod, series = Ant_ET_K) +
+  theme_classic()
+
+MB_ET_TB <- plot_smooths(ET_GLM_Mod, series = Ant_TB_K) +
+  theme_classic()
+
+```
+
+##################################################################################
+##################################################################################
+
+Exploring the relationship with Turbidity in Missisquoi Bay. 
+
+
+```{r}
+MB_Comb_GLM %>%
+  ggplot(aes(x=PC_RS, y=Ant_TB_K)) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  theme_minimal()
+
+MB_PC_Test <- MB_PC_RS %>%
+  dplyr::select(Start.Date, End.Date, Event, PC_Diff, RS, Abs_PC_Diff)
+
+MB_SS_Test <- MB_SS_RL %>%
+  dplyr::select(Start.Date, End.Date, Event, SS_Diff, RL)
+
+MB_ET_Test <- MB_ET_RL %>%
+  dplyr::select(Start.Date, End.Date, Event, ET_Diff, RL)
+
+
+MB_TB_Test <- MB_TB_RL %>%
+  dplyr::select(Start.Date, End.Date, Event, Ant_TB_K)
+
+MB_PC_TB <- full_join(MB_PC_Test, MB_TB_Test) %>%
+  na.omit()
+
+MB_SS_TB <- full_join(MB_SS_Test, MB_TB_Test) %>%
+  na.omit()
+
+MB_ET_TB <- full_join(MB_ET_Test, MB_TB_Test) %>%
+  na.omit()
+
+
+MB_PC_TB %>%
+  #filter(Event == "LW") %>%
+  ggplot(aes(x=Abs_PC_Diff, y=Ant_TB_K)) +
+  geom_point() +
+  geom_smooth(method="lm", se=FALSE) +
+  theme_minimal()
+
+
+MB_SS_TB %>%
+ #filter(Event == "HF") %>%
+  ggplot(aes(x=RL, y=Ant_TB_K, color=Event)) +
+  geom_point() +
+  geom_smooth(method="lm", se=FALSE) +
+  theme_minimal()
+
+
+MB_ET_TB %>%
+  #filter(Event == "HF") %>%
+  ggplot(aes(x=RL, y=Ant_TB_K, color=Event)) +
+  geom_point() +
+  geom_smooth(method="lm", se=FALSE) +
+  theme_minimal()
+
+
+```
+
+
+Citations: 
+
+```{r}
+rLakeAnalyzer::
+citation()
+citation("mgcv")
+citation("gratia")
+citation("vegan")
+citation("rLakeAnalyzer")
+```

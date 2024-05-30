@@ -1,0 +1,1454 @@
+---
+title: "Phytoplankton Analysis"
+author: "Katelynn"
+date: "2024-04-15"
+output: html_document
+---
+This script runs through the phytoplankton analyses for Missisquoi Bay and St. Albans Bay. In this script: 
+- Identify sampling events encompassing a single disturbance event
+- Calculate phytoplankton biomass, bray curtis, and shannon diversity,
+- Create code for ECE frequency figures on above metrics ^
+- Run phytoplankton dbRDA.
+
+```{r}
+library(ggforce)
+library(vegan)
+library(ggrepel)
+library(htmltools)
+library(BiodiversityR)
+library(tidyverse)
+library(installr)
+library(rmarkdown)
+library(dplyr)
+
+```
+
+```{r}
+
+SA_Phytos <- read_csv("..//Clean Data/Warner_etal_Disturbance_PhytoplanktonBV.csv") %>%
+  filter(!grepl("MB",Sample_ID))
+
+SA_FG_Keep <- SA_Phytos %>%
+  group_by(Sample_ID, SampleDate, Functional_classification) %>%
+  summarize(RA_BM = sum(RA_BM)) %>%
+  mutate(Keep = if_else(RA_BM >= 0.05, "Yes", "No")) %>%
+  ungroup() %>%
+  dplyr::select(Functional_classification, Keep) %>%
+  filter(Keep=="Yes") %>%
+  unique()
+
+SA_Phyto_Date <- SA_Phytos %>% 
+  dplyr::select(SampleDate) %>%
+  unique()
+
+```
+
+
+# Load and Clean Secchi Depth Data.
+```{r}
+
+
+SA_Secchi1718 <- read.csv("../Raw Data/Int_Phyto_BREE_2018.csv") %>%
+  mutate(Date = mdy(Date),
+         Month=month(Date)) %>%
+  filter(Site=="SA") %>%
+    filter(Month > 5 & Month < 11) %>%
+  dplyr::select(Date, INT_Phyto)
+
+
+SA_Secchi21 <- read.csv("../Raw Data/Secchi_Depth_BREE_2021.csv") %>%
+  filter(Site == "SA") %>%
+  mutate(Date = mdy(Date),
+         Month=month(Date)) %>%
+    filter(Month > 5 & Month < 11) %>%
+  dplyr::select(Date, INT_Phyto)
+
+SA_INT_Phyto <- full_join(SA_Secchi1718, SA_Secchi21)
+
+```
+# Load and Clean Dissolved Nutrient Data
+
+```{r}
+library(readxl)
+
+SA17_NutDiss <-  read.csv("..//Raw Data/Nutrients/LG17_Dissolved.csv") %>%
+  filter(Site == "Inner") %>%
+  mutate(Date = mdy(Date)) %>%
+  dplyr::group_by(Depth, Date) %>%
+  dplyr::summarize(NH4 = mean(NH4..umol.L.),
+            NO3 = mean(NO3..umol.L.),
+            PO4 = mean(PO4..umol.L.)) %>%
+  mutate(NH4 = if_else(NH4 < 0, 0, NH4),
+         NO3 = if_else(NO3 < 0, 0, NO3),
+         PO4 = if_else(PO4 < 0, 0, PO4))
+
+SA18_NutDiss <- read.csv("..//Raw Data/Nutrients/LG18_Dissolved.csv") %>%
+  filter(Site == "INNER") %>%
+  mutate(Date = mdy(Date)) %>%
+  dplyr::group_by(Depth, Date) %>%
+  dplyr::summarize(NH4 = mean(uMol.L.N.NH4),
+            NO3 = mean(uMol.L.N.NO3),
+            PO4 = mean(uMol.L.P.PO4)) %>%
+  mutate(NH4 = if_else(NH4 < 0, 0, NH4),
+         NO3 = if_else(NO3 < 0, 0, NO3),
+         PO4 = if_else(PO4 < 0, 0, PO4))
+
+
+SA21_NutDiss <- read_xlsx("..//Raw Data/Nutrients/DissolvedNutrients_2021.xlsx") %>%
+  filter(ID != 	"LG21_347") %>%
+  filter(site == "STA Inner") %>%
+  mutate(Date = ymd(date)) %>%
+  rename(NH4 = `NH4_(uMol/L)`,
+            NO3 = `NO3_(uMol/L)`,
+            PO4 = `PO4_(uMol/L)`,
+         Depth = depth) %>%
+  mutate(NH4 = if_else(NH4 < 0, 0, NH4),
+         NO3 = if_else(NO3 < 0, 0, NO3),
+         PO4 = if_else(PO4 < 0, 0, PO4)) %>%
+  dplyr::group_by(Depth, Date) %>%
+  dplyr::summarize(NH4 = mean(NH4),
+            NO3 = mean(NO3),
+            PO4 = mean(PO4)) %>%
+  mutate(Depth = if_else(Depth == "surface", "Surface", Depth),
+         Depth = if_else(Depth == "bottom", "Bottom", Depth))
+
+SA_Nut_Diss <- full_join(SA17_NutDiss, SA18_NutDiss) %>%
+  full_join(., SA21_NutDiss)
+
+```
+
+
+```{r}
+SA_Phyto_Matrix <- SA_Phytos %>%
+  dplyr::select(SampleDate, Functional_classification, BM_ug.L) %>%
+  group_by(SampleDate, Functional_classification) %>%
+  summarise(BM = sum(BM_ug.L)) %>%
+  pivot_wider(names_from = "Functional_classification", values_from="BM") %>%
+  column_to_rownames(var="SampleDate") 
+
+SA_Phyto_Matrix[is.na(SA_Phyto_Matrix)] <- 0
+
+
+```
+
+Manually selected phytoplankton sampling dates that surrounded one single disturbance event. This code chunk is me filtering for those dates.
+
+```{r}
+
+SA_Dist_Dates
+SA_Phyto_Date
+
+SA_Phyto_171821 <- SA_Phyto_Matrix %>%
+  rownames_to_column(var="Date") %>%
+  filter(Date == "2017-08-23" | Date == "2017-08-30" | Date == "2017-08-16" |
+           Date == "2017-07-19" | Date == "2017-07-26" | Date == "2017-08-06" |
+           Date == "2017-09-20"| Date == "2017-10-05" | Date == "2017-09-14" |
+           Date == "2017-10-18" |
+           
+           Date == "2018-06-06" | Date == "2018-06-15" | Date == "2018-06-22" |
+           Date == "2018-06-29" | Date == "2018-07-06" |
+           Date == "2018-07-20" | Date == "2018-07-26" | Date == "2018-08-03" | Date == "2018-08-09" |
+           Date == "2018-08-31" | Date == "2018-09-07" | 
+           Date == "2018-09-19" | Date == "2018-10-05" |
+           Date == "2018-10-12" |
+           
+           Date == "2021-07-13" | Date == "2021-07-22" | Date == "2021-07-27" | Date == "2021-08-03" |
+           Date == "2021-09-03" | Date == "2021-09-17" | 
+           Date == "2021-09-17" | Date == "2021-09-25") %>%
+  column_to_rownames(var="Date")
+
+```
+
+
+The second code chunk is me creating a new Date column to match the first phytoplankton sampling date with the second phytoplankton sampling date surrounding an extreme climatic event. So Date1 is before the event (or during), and Date2 is after (or during).
+
+The next round of if_else statements is me adding in the disturbance event start and end time. If the sampling event occurred before the end of the disturbance event, then the "end" of the event will be that sampling date. This is to ensure that we are only accounting for the meteorological conditions during the event prior to the phytoplankton sampling event, and not the conditions after the sampling event.
+```{r}
+library(data.table)  
+
+SampleDate171821 <- SA_Phyto_171821 %>%
+  rownames_to_column(var="Date") %>%
+  mutate(Date1 = ymd(Date)) %>%
+  dplyr::select(Date, Date1) %>%
+  mutate(Date2 = if_else(Date1 == "2017-07-19",  as.Date("2017-07-26"), as.Date("2000-01-01")),
+         Date2 = if_else(Date1 == "2017-08-16",  as.Date("2017-08-23"), Date2),
+         Date2 = if_else(Date1 == "2017-08-23",  as.Date("2017-08-30"), Date2),
+         Date2 = if_else(Date1 == "2017-09-14",  as.Date("2017-09-20"), Date2),
+         Date2 = if_else(Date1 == "2017-09-20",  as.Date("2017-10-05"), Date2),
+         Date2 = if_else(Date1 == "2017-10-05",  as.Date("2017-10-18"), Date2),
+         
+         Date2 = if_else(Date1 == "2018-06-06",  as.Date("2018-06-15"), Date2),
+         Date2 = if_else(Date1 == "2018-06-15",  as.Date("2018-06-22"), Date2),
+         Date2 = if_else(Date1 == "2018-06-29",  as.Date("2018-07-06"), Date2),
+         Date2 = if_else(Date1 == "2018-07-20",  as.Date("2018-07-26"), Date2),
+         Date2 = if_else(Date1 == "2018-08-03",  as.Date("2018-08-09"), Date2),
+         Date2 = if_else(Date1 == "2018-08-31",  as.Date("2018-09-07"), Date2),
+         
+         
+         Date2 = if_else(Date1 == "2021-07-27",  as.Date("2021-08-03"), Date2),
+         Date2 = if_else(Date1 == "2021-09-03",  as.Date("2021-09-17"), Date2),
+         Date2 = if_else(Date1 == "2021-09-17",  as.Date("2021-09-25"), Date2)) %>%
+ filter(Date2 != as.Date("2000-01-01")) %>%
+   mutate(ID = rleid(Date1)) %>%
+   mutate(Event = if_else(ID == 1 | ID == 3 | ID == 6, "LT", "None"),
+          Event = if_else(ID == 2 | ID == 7 | ID == 9 | ID == 13, "HF", Event),
+          Event = if_else(ID == 4 | ID == 14, "LW", Event),
+          Event = if_else(ID == 5 | ID == 8 | ID == 10 | ID == 11 | ID ==12 | ID == 15, "HT", Event)) %>%
+  mutate(Event.Start = if_else(ID == 1, as.Date("2017-07-24"), as.Date("2000-01-01")),
+         Event.Start = if_else(ID == 2, as.Date("2017-08-19"), Event.Start),
+         Event.Start = if_else(ID == 3, as.Date("2017-08-24"), Event.Start),
+         Event.Start = if_else(ID == 4, as.Date("2017-09-14"), Event.Start),
+         Event.Start = if_else(ID == 5, as.Date("2017-09-24"), Event.Start),
+         
+         Event.Start = if_else(ID == 6, as.Date("2018-06-04"), Event.Start),
+         Event.Start = if_else(ID == 7, as.Date("2018-06-19"), Event.Start),
+         Event.Start = if_else(ID == 8, as.Date("2018-06-30"), Event.Start),
+         Event.Start = if_else(ID == 9, as.Date("2018-07-26"), Event.Start),
+         Event.Start = if_else(ID == 10, as.Date("2018-08-06"), Event.Start),
+         Event.Start = if_else(ID == 11, as.Date("2018-09-01"), Event.Start),
+
+         Event.Start = if_else(ID == 12, as.Date("2018-10-09"), Event.Start),
+    
+         Event.Start = if_else(ID == 13, as.Date("2021-07-31"), Event.Start),
+         Event.Start = if_else(ID == 14, as.Date("2021-09-16"), Event.Start),
+         Event.Start = if_else(ID == 15, as.Date("2021-09-22"), Event.Start)) %>%
+  mutate(Event.End = if_else(ID == 1, as.Date("2017-07-26"), as.Date("2000-01-01")),
+         Event.End = if_else(ID == 2, as.Date("2017-08-21"), Event.End),
+         Event.End = if_else(ID == 3, as.Date("2017-08-30"), Event.End),
+         Event.End = if_else(ID == 4, as.Date("2017-09-18"), Event.End),
+         Event.End = if_else(ID == 5, as.Date("2017-09-27"), Event.End),
+
+         Event.End = if_else(ID == 6, as.Date("2018-06-07"), Event.End),
+         Event.End = if_else(ID == 7, as.Date("2018-06-20"), Event.End),
+         Event.End = if_else(ID == 8, as.Date("2018-07-06"), Event.End),
+         Event.End = if_else(ID == 9, as.Date("2018-07-26"), Event.End),
+         Event.End = if_else(ID == 10, as.Date("2018-08-07"), Event.End),
+         Event.End = if_else(ID == 11, as.Date("2018-09-06"), Event.End),
+
+         Event.End = if_else(ID == 12, as.Date("2018-10-10"), Event.End),
+
+         Event.End = if_else(ID == 13, as.Date("2021-08-03"), Event.End),
+         Event.End = if_else(ID == 14, as.Date("2021-09-16"), Event.End),
+         Event.End = if_else(ID == 15, as.Date("2021-09-23"), Event.End)) %>%
+  column_to_rownames(var="Date")
+
+
+```
+
+
+Creating sums of biomass, bray curtis and shannon diversity. 
+```{r}
+
+### Biomass
+
+
+SA_BM <- SA_Phytos %>%
+  rename(Date1 = SampleDate) %>%
+  mutate(Date1 = ymd(Date1)) %>%
+  group_by(Date1) %>%
+  summarise(BM = sum(BM_ug.L))
+
+SA_BM <- left_join(SampleDate171821, SA_BM)
+
+
+
+### Shannon Diversity
+
+
+SampleDate_SA <- SampleDate171821 %>%
+  rownames_to_column(var="SampleDate") %>%
+  dplyr::select(SampleDate, Event)
+
+SH_SA <- diversity(SA_Phyto_171821)
+
+SH_df_SA <- cbind(SampleDate_SA, SH_SA)
+
+
+
+### Bray Curtis
+
+BC_SA <- as.matrix(vegdist(SA_Phyto_171821, method="bray")) 
+
+nmds_SA <- metaMDS(BC_SA, autotransform = FALSE)
+ 
+sppscores(nmds_SA) <- SA_Phyto_171821
+
+nmds.plot_SA <- ordiplot(nmds_SA)
+## Type of Event Associated with the point (Before/After/During/None)
+sites.nmds_SA <- sites.long(nmds.plot_SA)
+species.nmds_SA <- species.long(nmds.plot_SA)
+
+ggplot() +
+  geom_point(aes(x=sites.nmds_SA$axis1, y=sites.nmds_SA$axis2))+
+  geom_text_repel(aes(x=species.nmds_SA$axis1, y=species.nmds_SA$axis2, label=species.nmds_SA$labels), color="black", size=2) +
+  theme_classic() 
+  theme(legend.position="none")
+
+
+```
+
+
+```{r}
+## selecting the bray curtis values between two sampling events
+
+BC1_SA <- BC_SA %>% 
+  as.data.frame() %>%
+  rownames_to_column(var="Date.y") %>%
+  pivot_longer(!Date.y, names_to = "Date.x", values_to = "BC") %>%
+  filter((Date.x == "2017-07-19" & Date.y == "2017-07-26") | 
+          (Date.x == "2017-08-16" & Date.y == "2017-08-23") | 
+          (Date.x == "2017-08-23" & Date.y == "2017-08-30") | 
+           (Date.x == "2017-09-14" & Date.y == "2017-09-20") | 
+          (Date.x == "2017-09-20" & Date.y == "2017-10-05") |
+           (Date.x == "2017-10-05" & Date.y == "2017-10-18") |
+           (Date.x == "2018-06-06" & Date.y == "2018-06-15") |
+           (Date.x == "2018-06-15" & Date.y == "2018-06-22") |
+           (Date.x == "2018-06-29" & Date.y == "2018-07-06") |
+           (Date.x == "2018-07-20" & Date.y == "2018-07-26") |
+           (Date.x == "2018-08-03" & Date.y == "2018-08-09") |
+           (Date.x == "2018-08-31" & Date.y == "2018-09-07") |
+           (Date.x == "2018-09-19" & Date.y == "2018-10-05") |
+           (Date.x == "2018-10-05" & Date.y == "2018-10-12") |
+           (Date.x == "2021-07-13" & Date.y == "2021-07-22") |
+           (Date.x == "2021-07-27" & Date.y == "2021-08-03") |
+           (Date.x == "2021-09-03" & Date.y == "2021-09-17") |
+           (Date.x == "2021-09-17" & Date.y == "2021-09-25")) %>%
+  rename(Date1 = Date.x, 
+         Date2 = Date.y) %>%
+  mutate(Date1 = as.Date(Date1),
+         Date2 = as.Date(Date2))
+
+BC1_SA <- full_join(BC1_SA, SampleDate171821) %>%
+  na.omit()
+
+# Summary stats.
+BC1_SA %>%
+  summarise(avg = mean(BC),
+            sd = sd(BC))
+
+BC1_SA %>% 
+  ggplot(aes(x=BC,y=reorder(Event, BC, mean))) +
+  geom_boxplot() +
+  #geom_line(aes(group=Event), color="#E7E7E7", linewidth=3.5) + 
+  #geom_point(size=3) +
+  theme_classic() +
+  theme(legend.position = "none",
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="#989898"),
+        ) +
+  #scale_color_manual(values=c("#436685", "#BF2F24"))+
+  xlab("Bray Curtis Dissimilarity") +
+  ylab("") +
+  xlim(0,1)
+
+BC_All <- as.matrix(vegdist(SA_Phyto_Matrix, method="bray")) 
+
+SABC2 <- BC_All %>%
+  as.data.frame() %>% 
+  rownames_to_column(var="Date1") %>%
+  mutate(Date2 = lag(Date1)) %>%
+  pivot_longer(!c(Date1,Date2), names_to = "Date.x", values_to = "BC") %>%
+  mutate(Keep = if_else(Date2 == Date.x, "Yes", "No")) %>%
+  filter(Keep == "Yes")
+  
+
+```
+
+################################################################################
+
+### BC, SH, BM for figures
+
+```{r}
+SA_Freq_Dist <- read_csv("../Clean Data/Phyto_Freq_Disturbance.csv") %>%
+  mutate(Date= mdy(Date),
+         Date2 = lag(Date)) %>%
+  filter(Site == "SA") %>%
+  filter(Date != "2017-07-19" & Date != "2018-06-06" & Date != "2021-07-13") %>%
+  rename(Date1 = Date) 
+
+SABC2 <- SABC2 %>%
+  mutate(Date1 = ymd(Date1),
+         Date2 = ymd(Date2)) %>%
+  mutate(Date1 = if_else(Date1 == as.Date("2021-08-25"), as.Date("2021-08-26"), Date1)) %>%
+  mutate(Date2 = if_else(Date2 == as.Date("2021-08-25"), as.Date("2021-08-26"), Date2))
+
+SA_Freq_Dist <- left_join(SA_Freq_Dist, SABC2, by=c("Date1", "Date2")) 
+
+SH_SA <- diversity(SA_Phyto_Matrix) %>%
+  as.data.frame()
+
+SH_SA <- SH_SA %>%
+  rownames_to_column(var="Date1") %>%
+  mutate(Date1 = if_else(Date1 == "2021-08-25", "2021-08-26", Date1)) %>%
+  mutate(SH = SH_SA$.) %>%
+  mutate(Date2 = lag(Date1)) %>%
+  mutate(SH2 = lag(SH)) %>%
+  mutate(SH_Diff = SH-SH2) %>%
+  select(Date1, Date2, SH_Diff, SH)
+
+SH_SA <- SH_SA %>%
+  filter(Date1 != "2017-07-19" & Date1 != "2018-06-06" & Date1 != "2021-07-13") %>%
+  mutate(Date1 = ymd(Date1),
+         Date2 = ymd(Date2))
+
+
+SA_Freq_Dist <- left_join(SA_Freq_Dist, SH_SA, by=c("Date1", "Date2")) 
+
+SA_BM <- SA_Phytos %>%
+  rename(Date1 = SampleDate) %>%
+  mutate(Date1 = ymd(Date1)) %>%
+  group_by(Date1) %>%
+  summarise(BM = sum(BM_ug.L)) %>%
+  mutate(Date2 = lag(Date1)) %>%
+  mutate(BM2 = lag(BM)) %>%
+  mutate(BM_Diff = BM-BM2) %>%
+  select(Date1, Date2, BM_Diff, BM) %>%
+   mutate(Date1 = if_else(Date1 == as.Date("2021-08-25"), as.Date("2021-08-26"), Date1)) %>%
+  mutate(Date2 = if_else(Date2 == as.Date("2021-08-25"), as.Date("2021-08-26"), Date2)) %>%
+  filter(Date1 != "2017-07-19" & Date1 != "2018-06-06" & Date1 != "2021-07-13") %>%
+  mutate(Date1 = ymd(Date1),
+         Date2 = ymd(Date2))
+
+SA_Freq_Dist <- left_join(SA_Freq_Dist, SA_BM, by=c("Date1", "Date2")) 
+
+```
+
+### CCA for Phytoplankton and Functional Groups. 
+
+
+In order to do this, we need to to merge together many dataframes.
+
+Note here - labels say CCA, but I ended up running a dbRDA (I just didn't change label names)
+
+```{r}
+library(cimir)
+
+SA_FG1 <- SA_Phytos %>%
+  dplyr::select(SampleDate, Functional_classification, BM_ug.L) %>%
+  group_by(SampleDate, Functional_classification) %>%
+  summarise(BM = sum(BM_ug.L)) %>%
+  mutate(Date1 = as.Date(SampleDate)) %>%
+  rename(FG = Functional_classification,
+         BM1 = BM) %>%
+  dplyr::select(-SampleDate) %>%
+  filter(FG %in% SA_FG_Keep$Functional_classification)
+  
+
+SA_FG2 <- SA_Phytos %>%
+  dplyr::select(SampleDate, Functional_classification, BM_ug.L) %>%
+  group_by(SampleDate, Functional_classification) %>%
+  summarise(BM = sum(BM_ug.L)) %>%
+  mutate(Date2 = as.Date(SampleDate)) %>%
+  rename(FG = Functional_classification,
+         BM2 = BM) %>%
+  dplyr::select(-SampleDate) %>%
+  filter(FG %in% SA_FG_Keep$Functional_classification)
+
+
+SA_FG <- left_join(BC1_SA, SA_FG1, by="Date1") %>%
+  full_join(., SA_FG2, by=c("Date2", "FG")) %>%
+  dplyr::select(Date1, Date2, BM1, BM2, Event, FG, Event.Start, Event.End)
+  
+SA_FG$BM1 <- replace_na(SA_FG$BM1, 0)
+SA_FG$BM2 <- replace_na(SA_FG$BM2, 0)
+
+SA_Phyto_CCA <- SA_FG %>%
+  mutate(Diff_BM = (BM2 - BM1)) %>%
+  unique() %>%
+  na.omit() %>%
+  dplyr::select(Date2, Diff_BM, FG, Event.Start, Event.End, Event) 
+ 
+
+
+### Integrated Phytoplankton Depth
+
+SA_INT_Phyto1 <- SA_INT_Phyto %>%
+  mutate(Date1 = as.Date(Date)) %>%
+  rename(INT_Phyto1 = INT_Phyto) %>%
+  dplyr::select(Date1, INT_Phyto1)
+         
+
+SA_INT_Phyto2 <- SA_INT_Phyto %>%
+  mutate(Date2 = as.Date(Date)) %>%
+  rename(INT_Phyto2 = INT_Phyto) %>%
+  dplyr::select(Date2, INT_Phyto2)
+
+
+SA_INT_Phyto_CCA <- left_join(BC1_SA, SA_INT_Phyto1) %>%
+  left_join(., SA_INT_Phyto2)
+
+## Substituting 9.10.21 for 9.17.21's secchi depth bc the data sheet is missing
+
+SA_INT_Phyto_CCA$INT_Phyto1 <- replace_na(SA_INT_Phyto_CCA$INT_Phyto1, 5.8)
+SA_INT_Phyto_CCA$INT_Phyto2 <- replace_na(SA_INT_Phyto_CCA$INT_Phyto2, 5.3)
+
+SA_INT_Phyto_CCA <- SA_INT_Phyto_CCA %>%
+  mutate(Int_Diff = INT_Phyto2 - INT_Phyto1) %>%
+  dplyr::select(Date2, Int_Diff) 
+
+### Nutrient Difference between sampling events
+
+## Surface 
+
+SA_SNUT_Phyto1<- SA_Nut_Diss %>%
+  filter(Depth=="Surface") %>%
+  mutate(Date1 = as.Date(Date)) %>%
+  rename(NH4S1= NH4,
+         NO3S1 = NO3, 
+         PO4S1 = PO4) %>%
+  dplyr::select(Date1, NH4S1, NO3S1, PO4S1)
+         
+
+SA_SNUT_Phyto2 <- SA_Nut_Diss %>%
+  mutate(Date = if_else(Date == as.Date("2018-07-09"), as.Date("2018-07-06"), Date)) %>%
+  filter(Depth=="Surface") %>%
+  mutate(Date2 = as.Date(Date)) %>%
+  rename(NH4S2 = NH4,
+         NO3S2 = NO3, 
+         PO4S2= PO4) %>%
+  dplyr::select(Date2, NH4S2, NO3S2, PO4S2)
+
+
+SA_SNUT_Phyto_CCA <- left_join(BC1_SA, SA_SNUT_Phyto1) %>%
+  left_join(., SA_SNUT_Phyto2)
+
+
+SA_SNUT_Phyto_CCA <- SA_SNUT_Phyto_CCA %>%
+  mutate(NH4S_Diff = NH4S2 - NH4S1,
+         NO3S_Diff = NO3S2 - NO3S1,
+         PO4S_Diff = PO4S2 - PO4S1) %>%
+  dplyr::select(Date2, NH4S_Diff, NO3S_Diff, PO4S_Diff)  
+
+## Bottom
+
+SA_BNUT_Phyto1 <- SA_Nut_Diss %>%
+  filter(Depth=="Bottom") %>%
+  mutate(Date1 = as.Date(Date)) %>%
+  rename(NH4B1 = NH4,
+         NO3B1 = NO3, 
+         PO4B1 = PO4) %>%
+  dplyr::select(Date1, NH4B1, NO3B1, PO4B1)
+         
+SA_BNUT_Phyto2 <- SA_Nut_Diss %>%
+  mutate(Date = if_else(Date == as.Date("2018-07-09"), as.Date("2018-07-06"), Date)) %>%
+  filter(Depth=="Bottom") %>%
+  mutate(Date2= as.Date(Date)) %>%
+  rename(NH4B2 = NH4,
+         NO3B2= NO3, 
+         PO4B2 = PO4) %>%
+  dplyr::select(Date2, NH4B2, NO3B2, PO4B2)
+
+
+SA_BNUT_Phyto_CCA <- left_join(BC1_SA, SA_BNUT_Phyto1) %>%
+  left_join(., SA_BNUT_Phyto2)
+
+
+SA_BNUT_Phyto_CCA <- SA_BNUT_Phyto_CCA %>%
+  mutate(NH4B_Diff = NH4B2 - NH4B1,
+         NO3B_Diff = NO3B2 - NO3B1,
+         PO4B_Diff = PO4B2 - PO4B1) %>%
+  dplyr::select(Date2, NH4B_Diff, NO3B_Diff, PO4B_Diff)
+ 
+
+
+### Wind Conditions: 
+library(cimir)
+
+SA_Wind <- SA_Met %>%
+  group_by(Date) %>%
+  summarize(Wind_Speed = mean(Wind_Speed_m.s),
+            Wind_Dir = mean(Wind_Dir)) %>%
+  dplyr::select(Date, Wind_Speed, Wind_Dir) %>%
+  mutate(Wind_Dir_C = cimis_degrees_to_compass(Wind_Dir),
+        Event.Start = Date)
+## Stream Flow 
+
+SA_SF_CCA <- SA_SF %>%
+  dplyr::select(Date, Sum_SF) %>%
+  mutate(Event.Start = Date)
+
+  ## Antecedent Conditions: 
+
+SA_Turb_CCA <- SA_Turb %>%
+    ungroup() %>%
+  mutate(Avg_Turbid1 = lag(Avg_Turbid),
+         Avg_Turbid2 = lag(Avg_Turbid1),
+         Avg_Turbid3 = lag(Avg_Turbid2),
+         Ant_Turb = ((Avg_Turbid1 + Avg_Turbid2 + Avg_Turbid3)/3),
+         Event.Start = Date) %>%
+  dplyr::select(Date, Event.Start, Ant_Turb)
+
+SA_EpiTemp_CCA <- SA_EpiTemp %>%
+  ungroup() %>%
+  mutate(Epi.Temp1 = lag(Epi.Temp),
+         Epi.Temp2 = lag(Epi.Temp1),
+         Epi.Temp3 = lag(Epi.Temp2), 
+         Ant_EpiTemp = ((Epi.Temp1 + Epi.Temp2 + Epi.Temp3)/3),
+         Event.Start = Date) %>%
+  dplyr::select(Date, Event.Start, Ant_EpiTemp)
+
+SA_SS_CCA <- SA.Schmidt %>%
+    ungroup() %>%
+  mutate(SS1 = lag(SS),
+         SS2 = lag(SS1),
+         SS3 = lag(SS2),
+         Ant_SS = ((SS1 + SS2 + SS3)/3)) %>%
+  dplyr::select(Date, Ant_SS)
+
+
+### Select the dates for the disturbance and get their averages
+
+SA_Met_CCA <- full_join(SA_Wind, SA_Temp_CCA,  by="Date") %>%
+  full_join(.,  SA_SF_CCA) %>%
+  dplyr::select(Date, Wind_Speed, Avg_Temp, Sum_SF)
+
+SA_SampleDates <- SampleDate171821 %>%
+  dplyr::select(Event.Start, Event.End)
+
+setDT(SA_Met_CCA)[
+  # perform update join 
+  setDT(SA_SampleDates), on = .(Date >= Event.Start, Date <= Event.End), 
+  `:=`(Event.Start = Event.Start, Event.End = Event.End)]
+
+
+SA_Met_CCA <- SA_Met_CCA %>%
+  na.omit() %>%
+  group_by(Event.Start, Event.End) %>%
+  summarise(Avg_Wind = mean(Wind_Speed),
+            Avg_Temp = mean(Avg_Temp),
+            Avg_SF = mean(Sum_SF))
+
+```
+
+
+```{r}
+
+### Combine
+CCA_Dat <- left_join(SA_Turb_CCA, SA_EpiTemp_CCA) %>%
+  left_join(., SA_SS_CCA) %>%
+  full_join(., SA_Phyto_CCA) %>%
+  left_join(., SA_INT_Phyto_CCA) %>%
+  left_join(., SA_SNUT_Phyto_CCA) %>%
+  left_join(., SA_BNUT_Phyto_CCA) %>%
+  left_join(., SA_Met_CCA) %>%
+  na.omit()
+
+```
+
+
+
+```{r}
+
+CCA_Phytos <- CCA_Dat %>%
+  dplyr::select(Date2, Diff_BM, FG) %>%
+  pivot_wider(names_from = "FG", values_from = "Diff_BM") %>%
+  column_to_rownames(var="Date2") %>%
+  replace(is.na(.), 0)
+
+CCA_Met <- CCA_Dat %>%
+  dplyr::select(-Date, -Diff_BM, -FG, -Event.Start, -Event.End, -Event) %>%
+  unique() %>%
+  column_to_rownames(var="Date2")
+
+SA_CCA_Event <- CCA_Dat %>%
+  dplyr::select(Event, Date2) %>%
+  unique() %>%
+  column_to_rownames(var="Date2")
+
+```
+
+
+
+Tutorial for this from: https://uw.pressbooks.pub/appliedmultivariatestatistics/chapter/rda-and-dbrda/
+```{r}
+
+SA_CCA_Phytos <- CCA_Phytos %>%
+  decostand("range")
+
+SA_CCA_Met <- CCA_Met %>%
+  decostand("range")
+
+SA_dbrda <- dbrda(SA_CCA_Phytos ~ .,
+                   data = SA_CCA_Met,
+                   distance = "bray")
+ 
+
+print(SA_dbrda)
+
+print(anova.cca(SA_dbrda))
+
+
+```
+Model: dbrda(formula = SA_CCA_Phytos ~ Int_Diff + Avg_Turb + Avg_SS, data = SA_CCA_Met, distance = "bray") - = 0.02
+
+
+## Forward Selection for Disturbance Characteristics: 
+
+```{r}
+library(MASS)
+
+# Initial RDA with ALL of the environmental data
+SA_full <- dbrda(SA_CCA_Phytos ~ .,
+                   data = SA_CCA_Met,
+                   distance = "bray")
+
+SA_null <- dbrda(SA_CCA_Phytos ~ 1, data=SA_CCA_Met, 
+                 distance="bray")
+
+modAIC <- MASS::stepAIC(SA_null,direction='both', scope = list(lower = SA_null,
+                                                              upper = SA_full))
+?stepAIC()
+
+SA_mod <- dbrda(SA_CCA_Phytos ~ NO3S_Diff, data=SA_CCA_Met, distance="bray")
+print(SA_mod)
+
+anova.cca(SA_mod)
+
+
+
+
+```
+
+
+
+```{r}
+
+SA_dbrda_summary <-  summary(SA_mod)
+
+SA_dbrda_summary$concont
+
+
+```
+
+The first axis in the dbRDA accounts for ~10%
+
+```{r}
+
+## This code adds species scores back into the dbrda, since they are always missing. That way we can plot species on our ordination plot with the sites and environmental variables. 
+
+sppscores(SA_mod) <- SA_CCA_Phytos
+
+plot <- ordiplot(SA_mod,type = "point")
+
+```
+
+```{r}
+# This code chunk extracts data from the dbRDA
+
+sites.long <- sites.long(plot, env.data=SA_CCA_Met)
+
+axis.long <- axis.long(SA_mod, choices=c(1, 2))
+
+
+
+df <- colSums(CCA_Phytos) %>%
+  as.data.frame() %>%
+  mutate(`.` = abs(`.`))
+
+species.long <- species.long(plot)
+
+
+
+vectors.envfit <- envfit(plot, env=SA_CCA_Met)
+vectors.long <- vectorfit.long(vectors.envfit) %>%
+  filter( vector == "NO3S_Diff")
+vectors.long
+
+## Stream Flow is not significant. Everything else is. 
+
+```
+
+Making the plot.
+
+Be sure to run all of SA_2 before running this plot. 
+
+```{r}
+
+SA_RDA_Dist <- ggplot() + 
+      geom_vline(xintercept = c(0), color = "grey70", linetype = 2) +
+      geom_hline(yintercept = c(0), color = "grey70", linetype = 2) +  
+      xlab(axis.long[1, "label"]) +
+      ylab(axis.long[2, "label"]) +  
+      scale_x_continuous(sec.axis = dup_axis(labels=NULL, name=NULL)) +
+      scale_y_continuous(sec.axis = dup_axis(labels=NULL, name=NULL)) +    
+      geom_point(data=sites.long, 
+                 aes(x=axis1, y=axis2, color=SA_CCA_Event$Event), 
+                 size=1) +
+      #geom_point(data=species.long_filt, 
+      #          aes(x=axis1, y=axis2), size=1.5, color="dodgerblue3", alpha=0.6) +
+      geom_text_repel(data=species.long, 
+                    aes(x=axis1*1, y=axis2*1, label=labels),
+                    color="dodgerblue4", size=2) +
+      geom_segment(data=vectors.long,
+                 aes(x=0, y=0, xend=axis1*1, yend=axis2*1), 
+                 colour="black", size=0.5, arrow=arrow(type="open", length=unit(0.15, "cm"))) +
+      geom_text_repel(data=vectors.long, 
+                    aes(x=axis1*1, y=axis2*1, label=vector),
+                    size=2,
+                    colour="black") +
+      ggsci::scale_colour_npg() +
+      theme_classic() +
+      #coord_fixed(ratio=1) +
+  ggtitle("A") +
+  labs(color="Event Type")
+
+```
+
+################################################################################
+################################################################################
+
+Did the exact same thing as St. Albans for Missisquoi Bay.
+
+# Missisquoi Bay
+
+```{r}
+
+MB_Phytos <- read_csv("..//Clean Data/Warner_etal_Disturbance_PhytoplanktonBV.csv") %>%
+  filter(!grepl("StABIn",Sample_ID)) %>%
+  filter(!grepl("SA",Sample_ID)) %>%
+  dplyr::select(-SampleDate)
+
+MB_Phyto_Date <- read_csv("..//Raw Data/Phytoplankton/Final_Biovolume/Phytoplankton_Dates.csv") %>% 
+  dplyr::select(Sample_ID, SampleDate) %>%
+  na.omit() %>%
+  filter(!grepl("StABIn",Sample_ID)) %>%
+  filter(!grepl("SA",Sample_ID)) %>%
+  filter(Sample_ID != "?") %>%
+  mutate(SampleDate = mdy(SampleDate)) %>%
+  unique()
+
+MB_Phytos <- left_join(MB_Phytos, MB_Phyto_Date, by="Sample_ID")
+
+MB_FG_Keep <- MB_Phytos %>%
+  group_by(Sample_ID,  Functional_classification) %>%
+  summarize(RA_BM = sum(RA_BM)) %>%
+  mutate(Keep = if_else(RA_BM >= 0.05, "Yes", "No")) %>%
+  ungroup() %>%
+  dplyr::select(Functional_classification, Keep) %>%
+  filter(Keep=="Yes") %>%
+  unique()
+
+```
+
+```{r}
+
+
+MB_Secchi18 <- read.csv("../Raw Data/Int_Phyto_BREE_2018.csv") %>%
+  mutate(Date = mdy(Date),
+         Month=month(Date)) %>%
+    filter(Month > 5 & Month < 11) %>%
+    filter(Site == "MB") %>%
+  dplyr::select(Date, INT_Phyto)
+
+
+MB_Secchi21 <- read.csv("../Raw Data/Secchi_Depth_BREE_2021.csv") %>%
+  filter(Site == "MB") %>%
+  mutate(Date = mdy(Date),
+         Month=month(Date)) %>%
+    filter(Month > 5 & Month < 11) %>%
+  dplyr::select(Date, INT_Phyto)
+
+MB_INT_Phyto <- full_join(MB_Secchi18, MB_Secchi21)
+
+
+library(readxl)
+
+
+MB18_NutDiss <- read.csv("..//Raw Data/Nutrients/LG18_Dissolved.csv") %>%
+  filter(Site == "MB") %>%
+  mutate(Date = mdy(Date)) %>%
+  dplyr::group_by(Depth, Date) %>%
+  dplyr::summarize(NH4 = mean(uMol.L.N.NH4),
+            NO3 = mean(uMol.L.N.NO3),
+            PO4 = mean(uMol.L.P.PO4)) %>%
+  mutate(NH4 = if_else(NH4 < 0, 0, NH4),
+         NO3 = if_else(NO3 < 0, 0, NO3),
+         PO4 = if_else(PO4 < 0, 0, PO4))
+
+
+MB21_NutDiss <- read_xlsx("..//Raw Data/Nutrients/DissolvedNutrients_2021.xlsx") %>%
+  filter(ID != 	"LG21_347") %>%
+  filter(site == "Miss Bay") %>%
+  mutate(Date = ymd(date)) %>%
+  rename(NH4 = `NH4_(uMol/L)`,
+            NO3 = `NO3_(uMol/L)`,
+            PO4 = `PO4_(uMol/L)`,
+         Depth = depth) %>%
+  mutate(NH4 = if_else(NH4 < 0, 0, NH4),
+         NO3 = if_else(NO3 < 0, 0, NO3),
+         PO4 = if_else(PO4 < 0, 0, PO4)) %>%
+  dplyr::group_by(Depth, Date) %>%
+  dplyr::summarize(NH4 = mean(NH4),
+            NO3 = mean(NO3),
+            PO4 = mean(PO4)) %>%
+  mutate(Depth = if_else(Depth == "surface", "Surface", Depth),
+         Depth = if_else(Depth == "bottom", "Bottom", Depth))
+
+  MB_Nut_Diss <- full_join(MB18_NutDiss, MB21_NutDiss)
+
+```
+
+
+```{r}
+
+MB_Phyto_Matrix <- MB_Phytos %>%
+  dplyr::select(SampleDate, Functional_classification, BM_ug.L) %>%
+  group_by(SampleDate, Functional_classification) %>%
+  summarise(BM = sum(BM_ug.L)) %>%
+  pivot_wider(names_from = "Functional_classification", values_from="BM") %>%
+  column_to_rownames(var="SampleDate") 
+
+MB_Phyto_Matrix[is.na(MB_Phyto_Matrix)] <- 0
+
+
+MB_Phyto_Date <- MB_Phytos %>%
+  dplyr::select(SampleDate) %>%
+  unique()
+
+MB_Dist_Dates
+
+print(n = 65, arrange(MB_Dist_Dates, MB_Dist_Dates$Event_Start))
+
+```
+
+
+```{r}
+library(data.table)
+
+MB_Phyto_1821 <- MB_Phyto_Matrix %>%
+  rownames_to_column(var="Date") %>%
+  filter(Date == "2018-06-06" | Date == "2018-06-22" | Date == "2018-07-09" |
+           Date == "2018-07-27" | Date == "2018-08-06" | Date == "2018-08-10" |
+           Date == "2018-08-20" | Date == "2018-08-31" | Date == "2018-09-14" |
+           Date == "2018-09-28" | 
+           Date == "2021-08-03" | Date == "2021-08-10" | Date == "2021-08-19" |
+           Date == "2021-08-25" | Date == "2021-09-03"|  Date == "2021-09-17" |
+           Date == "2021-09-25" | Date == "2021-10-11") %>%
+  column_to_rownames(var="Date")
+  
+
+SampleDate1821 <- MB_Phyto_1821 %>%
+   rownames_to_column(var="Date") %>%
+  mutate(Date1 = ymd(Date)) %>%
+  dplyr::select(Date, Date1) %>%
+  mutate(Date2 = if_else(Date1 == "2018-06-22",  as.Date("2018-07-09"), as.Date("2000-01-01")), 
+         Date2 = if_else(Date1 == "2018-07-27",  as.Date("2018-08-06"), Date2),
+         Date2 = if_else(Date1 == "2018-08-06",  as.Date("2018-08-20"), Date2),
+         Date2 = if_else(Date1 == "2018-08-31",  as.Date("2018-09-14"), Date2),
+         Date2 = if_else(Date1 == "2021-08-03",  as.Date("2021-08-10"), Date2),
+         Date2 = if_else(Date1 == "2021-08-19",  as.Date("2021-08-25"), Date2),
+         Date2 = if_else(Date1 == "2021-09-03",  as.Date("2021-09-17"), Date2),
+         Date2 = if_else(Date1 == "2021-09-25",  as.Date("2021-10-11"), Date2)) %>%
+  filter(Date2 != as.Date("2000-01-01")) %>%
+   mutate(ID = rleid(Date1)) %>%
+   mutate(Event = if_else(ID == 1 | ID == 3 | ID == 7, "HF", "HT")) %>%
+  mutate(Event.Start = if_else(ID == 1, as.Date("2018-07-02"), as.Date("2000-01-01")),
+         Event.Start = if_else(ID == 2, as.Date("2018-08-06"), Event.Start),
+         Event.Start = if_else(ID == 3, as.Date("2018-08-10"), Event.Start),
+         Event.Start = if_else(ID == 4, as.Date("2018-09-01"), Event.Start),
+         Event.Start = if_else(ID == 5, as.Date("2021-08-09"), Event.Start),
+         Event.Start = if_else(ID == 6, as.Date("2021-08-20"), Event.Start),
+         Event.Start = if_else(ID == 7, as.Date("2021-09-17"), Event.Start),
+         Event.Start = if_else(ID == 8, as.Date("2021-10-08"), Event.Start)) %>%
+  mutate(Event.End = if_else(ID == 1, as.Date("2018-07-03"), as.Date("2000-01-01")),
+         Event.End = if_else(ID == 2, as.Date("2018-08-06"), Event.End),
+         Event.End = if_else(ID == 3, as.Date("2018-08-13"), Event.End),
+         Event.End = if_else(ID == 4, as.Date("2018-09-06"), Event.End),
+         Event.End = if_else(ID == 5, as.Date("2021-08-10"), Event.End),
+         Event.End = if_else(ID == 6, as.Date("2021-08-25"), Event.End),
+         Event.End = if_else(ID == 7, as.Date("2021-09-17"), Event.End),
+         Event.End = if_else(ID == 8, as.Date("2021-10-11"), Event.End)) %>%
+  column_to_rownames(var="Date")
+
+
+
+
+### Biomass
+
+MB_BM <- MB_Phytos %>%
+  rename(Date1 = SampleDate) %>%
+  mutate(Date1 = ymd(Date1)) %>%
+  group_by(Date1) %>%
+  summarise(BM = sum(BM_ug.L))
+
+MB_BM <- left_join(SampleDate1821, MB_BM)
+
+
+### Shannon diversity
+
+SampleDate_MB <- SampleDate1821 %>%
+  rownames_to_column(var="SampleDate") %>%
+  dplyr::select(SampleDate, Event)
+
+SH_MB <- diversity(MB_Phyto_1821)
+
+SH_df_MB <- cbind(SampleDate_MB, SH_MB)
+
+
+### Bray curtis
+
+BC_MB <- as.matrix(vegdist(MB_Phyto_1821, method="bray")) 
+
+nmds_MB <- metaMDS(BC_MB, autotransform = FALSE)
+
+sppscores(nmds_MB) <- MB_Phyto_1821
+
+nmds.plot_MB <- plot(nmds_MB)
+## Type of Event Associated with the point (Before/After/During/None)
+sites.nmds_MB <- sites.long(nmds.plot_MB)
+species.nmds_MB <- species.long(nmds.plot_MB)
+
+ggplot() +
+  geom_point(aes(x=sites.nmds_MB$axis1, y=sites.nmds_MB$axis2)) +
+  #geom_text_repel(aes(x=species.nmds$axis1, y=species.nmds$axis2, label=species.nmds$labels), color="black", size=2) +
+  theme_classic() 
+  #theme(legend.position="none")
+
+
+```
+
+```{r}
+
+BC1_MB <- BC_MB %>% 
+  as.data.frame() %>%
+  rownames_to_column(var="Date.y") %>%
+  pivot_longer(!Date.y, names_to = "Date.x", values_to = "BC") %>%
+  filter((Date.x == "2018-06-06" & Date.y == "2018-06-22") |
+           (Date.x == "2018-06-22" & Date.y == "2018-07-09") |
+           (Date.x == "2018-07-27" & Date.y == "2018-08-06") |
+           (Date.x == "2018-08-06" & Date.y == "2018-08-20") |
+           (Date.x == "2018-08-31" & Date.y == "2018-09-14") |
+           (Date.x == "2021-08-03" & Date.y == "2021-08-10") |
+           (Date.x == "2021-08-19" & Date.y == "2021-08-25") |
+           (Date.x == "2021-09-03" & Date.y == "2021-09-17") |
+           (Date.x == "2021-09-25" & Date.y == "2021-10-11")) %>%
+  rename(Date1 = Date.x, 
+         Date2 = Date.y) %>%
+  mutate(Date1 = as.Date(Date1),
+         Date2 = as.Date(Date2))
+
+BC1_MB <- full_join(BC1_MB, SampleDate1821)
+
+```
+
+### Bray Curtis and Shannon Diversity for all samples
+
+```{r}
+
+BC_All <- as.matrix(vegdist(MB_Phyto_Matrix, method="bray")) 
+
+MB_BC2 <- BC_All %>%
+  as.data.frame() %>% 
+  rownames_to_column(var="Date1") %>%
+  mutate(Date2 = lag(Date1)) %>%
+  pivot_longer(!c(Date1,Date2), names_to = "Date.x", values_to = "BC") %>%
+  mutate(Keep = if_else(Date2 == Date.x, "Yes", "No")) %>%
+  filter(Keep == "Yes")
+  
+MB_Freq_Dist <- read_csv("../Clean Data/Phyto_Freq_Disturbance.csv") %>%
+    filter(Site == "MB") %>%
+  mutate(Date = mdy(Date),
+         Date2 = lag(Date)) %>%
+  filter(Date != "2021-06-07" & Date != "2021-08-03" & Date != "2018-06-22") %>%
+  rename(Date1 = Date)
+
+MB_BC2 <- MB_BC2 %>%
+  mutate(Date1 = ymd(Date1),
+         Date2 = ymd(Date2))
+
+MB_Freq_Dist <- left_join(MB_Freq_Dist, MB_BC2, by=c("Date1", "Date2")) 
+
+SH_MB <- diversity(MB_Phyto_Matrix) %>%
+  as.data.frame()
+
+SH_MB <- SH_MB %>%
+  rownames_to_column(var="Date1") %>%
+  mutate(SH = SH_MB$.) %>%
+  mutate(Date2 = lag(Date1)) %>%
+  mutate(SH2 = lag(SH)) %>%
+  mutate(SH_Diff = SH-SH2) %>%
+  select(Date1, Date2, SH_Diff, SH)
+
+
+SH_MB <- SH_MB %>%
+  filter(Date1 != "2021-06-07" & Date1 != "2021-08-03" & Date1 != "2018-06-22") %>%
+  mutate(Date1 = ymd(Date1),
+         Date2 = ymd(Date2))
+
+
+MB_Freq_Dist <- left_join(MB_Freq_Dist, SH_MB, by=c("Date1", "Date2")) 
+
+MB_BM <- MB_Phytos %>%
+  rename(Date1 = SampleDate) %>%
+  mutate(Date1 = ymd(Date1)) %>%
+  group_by(Date1) %>%
+  summarise(BM = sum(BM_ug.L)) %>%
+  mutate(Date2 = lag(Date1)) %>%
+  mutate(BM2 = lag(BM)) %>%
+  mutate(BM_Diff = BM-BM2) %>%
+  select(Date1, Date2, BM_Diff, BM) %>%
+  filter(Date1 != "2021-06-07" & Date1 != "2021-08-03" & Date1 != "2018-06-22") %>%
+  mutate(Date1 = ymd(Date1),
+         Date2 = ymd(Date2))
+
+MB_Freq_Dist <- left_join(MB_Freq_Dist, MB_BM, by=c("Date1", "Date2")) 
+
+
+```
+
+
+### RDA
+
+
+```{r}
+library(cimir)
+
+MB_FG1 <- MB_Phytos %>%
+  dplyr::select(SampleDate, Functional_classification, BM_ug.L) %>%
+  group_by(SampleDate, Functional_classification) %>%
+  summarise(BM = sum(BM_ug.L)) %>%
+  mutate(Date1 = as.Date(SampleDate)) %>%
+  rename(FG = Functional_classification,
+         BM1 = BM) %>%
+  dplyr::select(-SampleDate) %>%
+  filter(FG %in% MB_FG_Keep$Functional_classification)
+  
+
+MB_FG2 <- MB_Phytos %>%
+  dplyr::select(SampleDate, Functional_classification, BM_ug.L) %>%
+  group_by(SampleDate, Functional_classification) %>%
+  summarise(BM = sum(BM_ug.L)) %>%
+  mutate(Date2 = as.Date(SampleDate)) %>%
+  rename(FG = Functional_classification,
+         BM2 = BM) %>%
+  dplyr::select(-SampleDate) %>%
+  filter(FG %in% MB_FG_Keep$Functional_classification)
+
+
+MB_FG <- left_join(BC1_MB, MB_FG1, by="Date1") %>%
+  full_join(., MB_FG2, by=c("Date2", "FG")) %>%
+  dplyr::select(Date1, Date2, BM1, BM2, FG, Event, Event.Start, Event.End)
+  
+MB_FG$BM1 <- replace_na(MB_FG$BM1, 0)
+MB_FG$BM2 <- replace_na(MB_FG$BM2, 0)
+
+MB_Phyto_CCA <- MB_FG %>%
+  mutate(Diff_BM = (BM2 - BM1)) %>%
+  unique() %>%
+  na.omit() %>%
+  dplyr::select(Date2, Diff_BM, FG, Event.Start, Event.End, Event) 
+ 
+
+
+### Integrated Phytoplankton Depth
+
+MB_INT_Phyto1 <- MB_INT_Phyto %>%
+  mutate(Date1 = as.Date(Date)) %>%
+  rename(INT_Phyto1 = INT_Phyto) %>%
+  dplyr::select(Date1, INT_Phyto1)
+         
+
+MB_INT_Phyto2 <- MB_INT_Phyto %>%
+  mutate(Date2 = as.Date(Date)) %>%
+  rename(INT_Phyto2 = INT_Phyto) %>%
+  dplyr::select(Date2, INT_Phyto2)
+
+
+MB_INT_Phyto_CCA <- left_join(BC1_MB, MB_INT_Phyto1) %>%
+  left_join(., MB_INT_Phyto2)
+
+## Substituting 9.10.21 for 9.17.21's secchi depth bc the data sheet is missing
+
+#MB_INT_Phyto_CCA$INT_Phyto1 <- replace_na(MB_INT_Phyto_CCA$INT_Phyto1, 5.8)
+
+#MB_INT_Phyto_CCA$INT_Phyto2 <- replace_na(MB_INT_Phyto_CCA$INT_Phyto2, 5.3)
+
+MB_INT_Phyto_CCA <- MB_INT_Phyto_CCA %>%
+  mutate(Int_Diff = INT_Phyto2 - INT_Phyto1) %>%
+  dplyr::select(Date2, Int_Diff) 
+
+### Nutrient Difference between sampling events
+
+## Surface 
+
+MB_SNUT_Phyto1<- MB_Nut_Diss %>%
+  filter(Depth=="Surface") %>%
+  mutate(Date1 = as.Date(Date)) %>%
+  rename(NH4S1= NH4,
+         NO3S1 = NO3, 
+         PO4S1 = PO4) %>%
+  dplyr::select(Date1, NH4S1, NO3S1, PO4S1)
+         
+
+MB_SNUT_Phyto2 <- MB_Nut_Diss %>%
+  mutate(Date = if_else(Date == as.Date("2018-07-09"), as.Date("2018-07-06"), Date)) %>%
+  filter(Depth=="Surface") %>%
+  mutate(Date2 = as.Date(Date)) %>%
+  rename(NH4S2 = NH4,
+         NO3S2 = NO3, 
+         PO4S2= PO4) %>%
+  dplyr::select(Date2, NH4S2, NO3S2, PO4S2)
+
+
+MB_SNUT_Phyto_CCA <- left_join(BC1_MB, MB_SNUT_Phyto1) %>%
+  left_join(., MB_SNUT_Phyto2)
+
+
+MB_SNUT_Phyto_CCA <- MB_SNUT_Phyto_CCA %>%
+  mutate(NH4S_Diff = NH4S2 - NH4S1,
+         NO3S_Diff = NO3S2 - NO3S1,
+         PO4S_Diff = PO4S2 - PO4S1) %>%
+  dplyr::select(Date2, NH4S_Diff, NO3S_Diff, PO4S_Diff)  
+
+## Bottom
+
+MB_BNUT_Phyto1 <- MB_Nut_Diss %>%
+  filter(Depth=="Bottom") %>%
+  mutate(Date1 = as.Date(Date)) %>%
+  rename(NH4B1 = NH4,
+         NO3B1 = NO3, 
+         PO4B1 = PO4) %>%
+  dplyr::select(Date1, NH4B1, NO3B1, PO4B1)
+         
+MB_BNUT_Phyto2 <- MB_Nut_Diss %>%
+  mutate(Date = if_else(Date == as.Date("2018-07-09"), as.Date("2018-07-06"), Date)) %>%
+  filter(Depth=="Bottom") %>%
+  mutate(Date2= as.Date(Date)) %>%
+  rename(NH4B2 = NH4,
+         NO3B2= NO3, 
+         PO4B2 = PO4) %>%
+  dplyr::select(Date2, NH4B2, NO3B2, PO4B2)
+
+
+MB_BNUT_Phyto_CCA <- left_join(BC1_MB, MB_BNUT_Phyto1) %>%
+  left_join(., MB_BNUT_Phyto2)
+
+
+MB_BNUT_Phyto_CCA <- MB_BNUT_Phyto_CCA %>%
+  mutate(NH4B_Diff = NH4B2 - NH4B1,
+         NO3B_Diff = NO3B2 - NO3B1,
+         PO4B_Diff = PO4B2 - PO4B1) %>%
+  dplyr::select(Date2, NH4B_Diff, NO3B_Diff, PO4B_Diff)
+ 
+
+
+### Wind Conditions: 
+library(cimir)
+
+MB_Wind <- MB_Met %>%
+  group_by(Date) %>%
+  summarize(Wind_Speed = mean(Wind_Speed)) %>%
+  dplyr::select(Date, Wind_Speed) %>%
+  mutate(Event.Start = Date)
+## Stream Flow 
+
+MB_SF_CCA <- MB_SF %>%
+  dplyr::select(Date, Sum_SF) %>%
+  mutate(Event.Start = Date)
+
+  ## Antecedent Conditions: 
+
+MB_Turb_CCA <- MB_Turb %>%
+    ungroup() %>%
+  mutate(Avg_Turbid1 = lag(Avg_Turbid),
+         Avg_Turbid2 = lag(Avg_Turbid1),
+         Avg_Turbid3 = lag(Avg_Turbid2),
+         Ant_Turb = ((Avg_Turbid1 + Avg_Turbid2 + Avg_Turbid3)/3),
+         Event.Start = Date) %>%
+  dplyr::select(Date, Event.Start, Ant_Turb)
+
+MB_EpiTemp_CCA <- MB_EpiTemp %>%
+  ungroup() %>%
+  mutate(Epi.Temp1 = lag(Epi.Temp),
+         Epi.Temp2 = lag(Epi.Temp1),
+         Epi.Temp3 = lag(Epi.Temp2), 
+         Ant_EpiTemp = ((Epi.Temp1 + Epi.Temp2 + Epi.Temp3)/3),
+         Event.Start = Date) %>%
+  dplyr::select(Date, Event.Start, Ant_EpiTemp)
+
+MB_SS_CCA <- MB.Schmidt %>%
+    ungroup() %>%
+  mutate(SS1 = lag(SS),
+         SS2 = lag(SS1),
+         SS3 = lag(SS2),
+         Ant_SS = ((SS1 + SS2 + SS3)/3)) %>%
+  dplyr::select(Date, Ant_SS)
+
+
+### Select the dates for the disturbance and get their averages
+
+MB_Met_CCA <- full_join(MB_Wind, MB_Temp,  by="Date") %>%
+  full_join(.,  MB_SF_CCA) %>%
+  dplyr::select(Date, Wind_Speed, Avg_Temp, Sum_SF)
+
+MB_SampleDates <- SampleDate1821 %>%
+  dplyr::select(Event.Start, Event.End)
+
+setDT(MB_Met_CCA)[
+  # perform update join 
+  setDT(MB_SampleDates), on = .(Date >= Event.Start, Date <= Event.End), 
+  `:=`(Event.Start = Event.Start, Event.End = Event.End)]
+
+
+MB_Met_CCA <- MB_Met_CCA %>%
+  na.omit() %>%
+  group_by(Event.Start, Event.End) %>%
+  summarise(Avg_Wind = mean(Wind_Speed),
+            Avg_Temp = mean(Avg_Temp),
+            Avg_SF = mean(Sum_SF))
+
+```
+
+
+```{r}
+
+### Combine
+CCA_Dat <- left_join(MB_Turb_CCA, MB_EpiTemp_CCA) %>%
+  left_join(., MB_SS_CCA) %>%
+  full_join(., MB_Phyto_CCA) %>%
+  left_join(., MB_INT_Phyto_CCA) %>%
+  left_join(., MB_SNUT_Phyto_CCA) %>%
+  left_join(., MB_BNUT_Phyto_CCA) %>%
+  left_join(., MB_Met_CCA) %>%
+  na.omit()
+
+```
+
+
+
+```{r}
+
+CCA_Phytos <- CCA_Dat %>%
+  dplyr::select(Date2, Diff_BM, FG) %>%
+  pivot_wider(names_from = "FG", values_from = "Diff_BM") %>%
+  column_to_rownames(var="Date2") %>%
+  replace(is.na(.), 0)
+
+CCA_Met <- CCA_Dat %>%
+  dplyr::select(-Date, -Diff_BM, -FG, -Event.Start, -Event.End, -Event) %>%
+  unique() %>%
+  column_to_rownames(var="Date2")
+
+MB_CCA_Event <- CCA_Dat %>%
+  dplyr::select(Event, Date2) %>%
+  unique() %>%
+  column_to_rownames(var="Date2")
+
+```
+
+## Forward Selection for Disturbance Characteristics: 
+
+```{r}
+MB_CCA_Phytos <- CCA_Phytos %>%
+  decostand("range")
+
+MB_CCA_Met <- CCA_Met %>%
+  decostand("range")
+
+
+library(MASS)
+# Initial RDA with ALL of the environmental data
+MB_full <- dbrda(MB_CCA_Phytos ~ .,
+                   data = MB_CCA_Met,
+                   distance = "bray")
+
+MB_null <- dbrda(MB_CCA_Phytos ~ 1, data=MB_CCA_Met, 
+                 distance="bray")
+
+modAIC <- MASS::stepAIC(MB_null,direction='both', scope = list(lower = MB_null,
+                                                              upper = MB_full))
+
+
+MB_mod <- dbrda(MB_CCA_Phytos ~ Ant_SS, data = MB_CCA_Met, distance="bray")
+
+print(MB_mod)
+
+anova.cca(MB_mod)
+
+
+```
+
+
+
+```{r}
+
+MB_dbrda_summary <-  summary(MB_mod)
+
+MB_dbrda_summary$concont
+
+
+```
+
+The first axis in the dbRDA accounts for ~26% and the second accounts for 12%
+
+```{r}
+
+## This code adds species scores back into the dbrda, since they are always missing. That way we can plot species on our ordination plot with the sites and environmental variables. 
+
+sppscores(MB_mod) <- MB_CCA_Phytos
+
+plot <- ordiplot(MB_mod,type = "point")
+
+```
+
+
+
+```{r}
+# This code chunk extracts data from the dbRDA
+
+sites.long <- sites.long(plot, env.data=MB_CCA_Met)
+
+axis.long <- axis.long(MB_mod, choices=c(1, 2))
+
+
+## Edit the species.long dataframe to include a column with abundance, then order abundance, and filter out....keep the top 10 functional groups. 
+
+
+df <- colSums(CCA_Phytos) %>%
+  as.data.frame() %>%
+  mutate(`.` = abs(`.`))
+
+species.long <- species.long(plot)
+
+
+
+vectors.envfit <- envfit(plot, env=MB_CCA_Met)
+vectors.long <- vectorfit.long(vectors.envfit) %>%
+  filter(vector == "Ant_SS")
+vectors.long
+
+## Stream Flow is not significant. Everything else is. 
+
+```
+
+
+```{r}
+
+MB_RDA_Dist <- ggplot() + 
+      geom_vline(xintercept = c(0), color = "grey70", linetype = 2) +
+      geom_hline(yintercept = c(0), color = "grey70", linetype = 2) +  
+      xlab(axis.long[1, "label"]) +
+      ylab(axis.long[2, "label"]) +  
+      scale_x_continuous(sec.axis = dup_axis(labels=NULL, name=NULL)) +
+      scale_y_continuous(sec.axis = dup_axis(labels=NULL, name=NULL)) +    
+      geom_point(data=sites.long, 
+                 aes(x=axis1, y=axis2, color=MB_CCA_Event$Event), 
+                 size=1) +
+      #geom_point(data=species.long_filt, 
+      #          aes(x=axis1, y=axis2), size=1.5, color="dodgerblue3", alpha=0.6) +
+      geom_text_repel(data=species.long, 
+                    aes(x=axis1*1, y=axis2*1, label=labels),
+                    color="dodgerblue4", size=2) +
+      geom_segment(data=vectors.long,
+                 aes(x=0, y=0, xend=axis1*1, yend=axis2*1), 
+                 colour="black", size=0.5, arrow=arrow(type="open", length=unit(0.15, "cm"))) +
+      geom_text_repel(data=vectors.long, 
+                    aes(x=axis1*1, y=axis2*1, label=vector),
+                    size=2,
+                    colour="black") +
+      ggsci::scale_colour_npg() +
+      theme_classic() +
+      #coord_fixed(ratio=1) +
+  ggtitle("B") +
+  labs(color="Event Type")
+```
