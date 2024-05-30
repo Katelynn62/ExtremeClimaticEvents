@@ -1,0 +1,2225 @@
+---
+title: "Resistance Analysis"
+author: "Katelynn"
+date: "2024-05-30"
+output: html_document
+---
+
+#Load Libraries
+```{r}
+library(plotrix)
+library(tidyverse)
+library(forecast)
+
+```
+
+```{r}
+SA_Dist_Data <- full_join(SA_Dist_Final, SA_PC, by="Date") %>%
+  full_join(., SA_Chl, by="Date") %>%
+  full_join(., SA_Turb, by="Date") %>%
+  full_join(., SA_Schmidt, by="Date") %>%
+  full_join(., SA_EpiTemp, by="Date") %>%
+  dplyr::select(-Cons_Days)
+
+SA_Dist_Data$Event <- replace_na(SA_Dist_Data$Event, "None")
+
+
+SA_Dist_Data <- SA_Dist_Data %>%
+  mutate(Date = as.Date(Date)) %>%
+  arrange(Date) %>%
+  mutate(Month = month(Date)) %>%
+  filter(Month > 5 & Month < 11) %>%
+  select(-Month)
+
+```
+
+Following Thayne et al. 2020, I want to try to calculate the resistance and resilience of high frequency variables to the different types of weather events. 
+
+# Resistance: 
+
+Resistance: The amount of change induced by an initial disturbace compared to the mean of the antecedent conditions. 
+
+Antecedent conditions: 3 days prior to the event. 
+Maximum change (C) will be: Dx - D0, where Dx is the value of your variable at tx, and D0 is the average of the antecedent conditions.
+
+Resistance is the degree of the maximum change. We've essentially done this, but not in the exact way they've done in this paper. 
+
+RS = 1 - [(2 * |Do|)/(C + |Do|)]
+
+
+For now, I am pulling data from the event intensity sheet. 
+
+We are going to use the maximum difference during the event. And resilience will be determined by the number of days it takes that variable to return to seasonal conditions over a three day period with the lowest standard error.
+
+For the sake of this analysis we need to modify the 2021-08-20 date to 2021-08-21
+
+```{r}
+
+
+SA_C_PC <- SA_Dist_Data %>%
+  mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  dplyr::select(Start.Date, End.Date, Date, Event, Avg_PC) %>%
+  mutate(Lag1 = lag(Avg_PC),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_PC = (Lag1 + Lag2 + Lag3)/3,
+         Ant_PC_K = if_else(Start.Date == Date, Ant_PC, 0),
+         Ant_PC_K = if_else(Ant_PC_K == 0, max(Ant_PC_K), Ant_PC_K),
+         PC_Diff = Avg_PC - Ant_PC_K,
+         Abs_PC_Diff = abs(PC_Diff)) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_PC_K) %>%
+  summarise(Abs_PC_Diff = max(Abs_PC_Diff))
+
+```
+
+Now we have the absolute value of the greatest change of PC during the event. 
+
+Next we want to calculate the resistance metric. 
+
+RS = 1 - [(2 * |Do|)/(C + |Do|)]
+
+```{r}
+
+SA_PC_RS <- SA_C_PC %>%
+  mutate(RS = (1 - ((2*Abs_PC_Diff)/(Ant_PC_K+Abs_PC_Diff)))) %>%
+  filter(Event_ID != 22)
+
+
+```
+
+We needed to remove the 2020-07-11 date. It looks like this is buoy deployment. 
+
+Resistance will be described in values between -1 and 1, where a value of 1 indicates maximum resistance. A resistance of zero means there has been a 100% reduction or enhancement in the observed variable. 
+
+
+Let's look at the range of resistance in a box plot, as well as the average resistance and standard deviation.
+
+```{r}
+PC_RS %>%
+  ggplot(aes(x=Start.Date, y=RS, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+It looks like over time, St. Albans phytoplankton have similar levels of resistance across the years. Maybe 2021 had less resistence on average. 
+
+```{r}
+SA_PC_RS %>%
+  ggplot(aes(x=Ant_PC_K, y=RS, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+Interestingly, we see that phycocyanin resistence to heat waves decreases after PC RFU is higher than 2 prior to the heatwave. Below 2 RFU, the results are extremeley variable. 
+
+# Resilience: 
+
+Resilience is a bit more challenging to calculate given the seasonality influences. Thayne et al. 2020, used time series decomposition in order to remove seasonal effects first. 
+
+Thayne et al., used three day periods after the storm period to detect if recovery occured. 
+From the point of the disturbance to three days after the extreme climat event, they took three day moving averages. The average with the lowest standard error was the recovery period. 
+
+
+Steps: -- (I did not do a time series decomposition yet)
+1. Transform time series into multi-seasoanl time series (msts)
+2. Decompose seasons and trends using a Loess functiuon (mstl)
+3. Adjust lake parameters for seasonality by subtracting the identified seasonal component from the original data.
+
+For now, I might bypass that part. 
+
+To calculate Resilience we need: 
+1. Have the date of the greatest change
+2. Take 3 periods of post event standard errors and averages
+3. Select lowest standard error. 
+4. The average from the lowest SE period is recovery period. 
+5. calculate RL with that number subtracted from the antecedent conditions. 
+
+
+```{r}
+SA_RL_PC <- SA_Dist_Data %>%
+  mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  select(Start.Date, End.Date, Date, Avg_PC, Event) %>%
+  mutate(Lag1 = lag(Avg_PC),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_PC = (Lag1 + Lag2 + Lag3)/3,
+         Ant_PC_K = if_else(Start.Date == Date, Ant_PC, 0),
+         Ant_PC_K = if_else(Ant_PC_K == 0, max(Ant_PC_K), Ant_PC_K),
+         PC_Diff = Avg_PC - Ant_PC_K,
+         Abs_PC_Diff = abs(PC_Diff),
+         DateX = Date[which.max(Abs_PC_Diff)]) %>%
+  ungroup() %>%
+  mutate(Lead1 = lead(Avg_PC),
+         Lead2 = lead(Lead1),
+         Lead3 = lead(Lead2), 
+         Lead4 = lead(Lead3),
+         Lead5 = lead(Lead4),
+         Lead6 = lead(Lead5),
+         Lead7 = lead(Lead6),
+         Lead8 = lead(Lead7),
+         Lead9 = lead(Lead8),
+         P1_PC = ((Lead1 + Lead2 + Lead3)/3),
+         P2_PC = ((Lead4 + Lead5 + Lead6)/3),
+         P3_PC = (Lead7 + Lead8 + Lead9)/ 3)
+        
+## Apply standard error to all the rows.
+
+SA_RL_PC$P1_se <- apply(SA_RL_PC[, c("Lead1","Lead2","Lead3")],1,std.error)
+SA_RL_PC$P2_se <- apply(SA_RL_PC[, c("Lead4","Lead5","Lead6")],1,std.error)
+SA_RL_PC$P3_se <- apply(SA_RL_PC[, c("Lead7","Lead8","Lead9")],1,std.error)
+
+SA_RL_PC <- SA_RL_PC %>%
+  na.omit() %>%
+  pivot_longer(cols=c(P1_PC, P2_PC, P3_PC), names_to = "Phase", values_to = "P_PC") %>%
+  pivot_longer(cols=c(P1_se, P2_se, P3_se), names_to = "Phase_se", values_to = "P_se") %>%
+  mutate(Phase_se = if_else(Phase_se == "P1_se", "P1_PC", Phase_se),
+         Phase_se = if_else(Phase_se == "P2_se", "P2_PC", Phase_se),
+         Phase_se = if_else(Phase_se == "P3_se", "P3_PC", Phase_se)) %>%
+  filter(Phase_se == Phase) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  filter(Date == DateX) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_PC_K, ) %>%
+  mutate(Keep = Phase_se[which.min(P_se)]) %>%
+  filter(Keep == Phase_se)
+
+```
+
+Now we can calculate the resilience!!
+
+```{r}
+
+SA_PC_RL <- SA_RL_PC %>%
+  ungroup() %>%
+  mutate(Dx = (P_PC - Ant_PC_K),
+         abs_Dx = abs(Dx)) %>%
+  mutate(RL = ((2*Abs_PC_Diff)/ (Abs_PC_Diff + abs_Dx)) - 1)
+
+```
+
+
+Now we can graph the resilience: 
+
+-1: Negative values here suggest that the parameter continued to move away from baseline conditions.
+
+0: There was no recovery: (e.g., D0 = Dx)
+
+1: Value of 1 means maximum resilience, where the system recovered quickly. 
+
+```{r}
+
+SA_PC_RL %>%
+  ggplot(aes(x=Ant_PC_K, y=RL, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+
+Similarly to Thayne et al. 2022, there was little recovery, which could be a result of seasonality. That's why they decompose the time series prior to running these analyses. 
+
+
+
+
+###############################################################################
+# Chlorophyll: 
+
+## Resistance
+
+```{r}
+SA_C_CHL <- SA_Dist_Data %>%
+  mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  select(Start.Date, End.Date, Date, Avg_Chl, Event) %>%
+  mutate(Lag1 = lag(Avg_Chl),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_Chl = (Lag1 + Lag2 + Lag3)/3,
+         Ant_Chl_K = if_else(Start.Date == Date, Ant_Chl, 0),
+         Ant_Chl_K = if_else(Ant_Chl_K == 0, max(Ant_Chl_K), Ant_Chl_K),
+         Chl_Diff = Avg_Chl - Ant_Chl_K,
+         Abs_Chl_Diff = abs(Chl_Diff)) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_Chl_K) %>%
+  summarise(Abs_Chl_Diff = max(Abs_Chl_Diff))
+
+
+SA_Chl_RS <- SA_C_CHL %>%
+  mutate(RS = (1 - ((2*Abs_Chl_Diff)/(Ant_Chl_K+Abs_Chl_Diff)))) %>%
+  filter(Event != 22)
+
+```
+
+### Plot
+
+```{r}
+
+SA_Chl_RS %>%
+  ggplot(aes(x=Ant_Chl_K, y=RS, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+
+## Resilience
+
+```{r}
+
+
+SA_RL_CHL <- SA_Dist_Data %>%
+  mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  select(Event, Start.Date, End.Date, Date, Avg_Chl) %>%
+  mutate(Lag1 = lag(Avg_Chl),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_Chl = (Lag1 + Lag2 + Lag3)/3,
+         Ant_Chl_K = if_else(Start.Date == Date, Ant_Chl, 0),
+         Ant_Chl_K = if_else(Ant_Chl_K == 0, max(Ant_Chl_K), Ant_Chl_K),
+         Chl_Diff = Avg_Chl - Ant_Chl_K,
+         Abs_Chl_Diff = abs(Chl_Diff),
+         DateX = Date[which.max(Abs_Chl_Diff)]) %>%
+  ungroup() %>%
+  mutate(Lead1 = lead(Avg_Chl),
+         Lead2 = lead(Lead1),
+         Lead3 = lead(Lead2), 
+         Lead4 = lead(Lead3),
+         Lead5 = lead(Lead4),
+         Lead6 = lead(Lead5),
+         Lead7 = lead(Lead6),
+         Lead8 = lead(Lead7),
+         Lead9 = lead(Lead8),
+         P1_Chl = ((Lead1 + Lead2 + Lead3)/3),
+         P2_Chl = ((Lead4 + Lead5 + Lead6)/3),
+         P3_Chl = (Lead7 + Lead8 + Lead9)/ 3)
+        
+## Apply standard error to all the rows.
+
+SA_RL_CHL$P1_se <- apply(SA_RL_CHL[, c("Lead1","Lead2","Lead3")],1,std.error)
+SA_RL_CHL$P2_se <- apply(SA_RL_CHL[, c("Lead4","Lead5","Lead6")],1,std.error)
+SA_RL_CHL$P3_se <- apply(SA_RL_CHL[, c("Lead7","Lead8","Lead9")],1,std.error)
+
+SA_RL_CHL <- SA_RL_CHL %>%
+  na.omit() %>%
+  pivot_longer(cols=c(P1_Chl, P2_Chl, P3_Chl), names_to = "Phase", values_to = "P_Chl") %>%
+  pivot_longer(cols=c(P1_se, P2_se, P3_se), names_to = "Phase_se", values_to = "P_se") %>%
+  mutate(Phase_se = if_else(Phase_se == "P1_se", "P1_Chl", Phase_se),
+         Phase_se = if_else(Phase_se == "P2_se", "P2_Chl", Phase_se),
+         Phase_se = if_else(Phase_se == "P3_se", "P3_Chl", Phase_se)) %>%
+  filter(Phase_se == Phase) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  filter(Date == DateX) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_Chl_K, ) %>%
+  mutate(Keep = Phase_se[which.min(P_se)]) %>%
+  filter(Keep == Phase_se)
+
+
+SA_Chl_RL <- SA_RL_CHL %>%
+  ungroup() %>%
+  mutate(Dx = (P_Chl - Ant_Chl_K),
+         abs_Dx = abs(Dx)) %>%
+  mutate(RL = ((2*Abs_Chl_Diff)/ (Abs_Chl_Diff + abs_Dx)) - 1)
+
+```
+
+### Plot
+
+```{r}
+
+SA_Chl_RL %>%
+  ggplot(aes(x=Ant_Chl_K, y=RL, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+################################################################################
+
+# Schmidt Stability: 
+
+## Resistance
+
+```{r}
+SA_C_SS <- SA_Dist_Data %>%
+  mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  select(Event, Start.Date, End.Date, Date, SS) %>%
+  mutate(Lag1 = lag(SS),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID= rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_SS = (Lag1 + Lag2 + Lag3)/3,
+         Ant_SS_K = if_else(Start.Date == Date, Ant_SS, 0),
+         Ant_SS_K = if_else(Ant_SS_K == 0, max(Ant_SS_K), Ant_SS_K),
+         SS_Diff = SS - Ant_SS_K,
+         Abs_SS_Diff = abs(SS_Diff)) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_SS_K) %>%
+  summarise(Abs_SS_Diff = max(Abs_SS_Diff))
+
+
+SA_SS_RS <- SA_C_SS %>%
+  mutate(RS = (1 - ((2*Abs_SS_Diff)/(Ant_SS_K+Abs_SS_Diff)))) %>%
+  filter(Event != 22)
+
+```
+
+### Plot
+
+```{r}
+
+SA_SS_RS %>%
+  ggplot(aes(x=Ant_SS_K, y=RS, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+
+## Resilience
+
+```{r}
+
+SA_RL_SS <- SA_Dist_Data %>%
+  mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  select(Event, Start.Date, End.Date, Date, SS) %>%
+  mutate(Lag1 = lag(SS),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_SS = (Lag1 + Lag2 + Lag3)/3,
+         Ant_SS_K = if_else(Start.Date == Date, Ant_SS, 0),
+         Ant_SS_K = if_else(Ant_SS_K == 0, max(Ant_SS_K), Ant_SS_K),
+         SS_Diff = SS - Ant_SS_K,
+         Abs_SS_Diff = abs(SS_Diff),
+         DateX = Date[which.max(Abs_SS_Diff)]) %>%
+  ungroup() %>%
+  mutate(Lead1 = lead(SS),
+         Lead2 = lead(Lead1),
+         Lead3 = lead(Lead2), 
+         Lead4 = lead(Lead3),
+         Lead5 = lead(Lead4),
+         Lead6 = lead(Lead5),
+         Lead7 = lead(Lead6),
+         Lead8 = lead(Lead7),
+         Lead9 = lead(Lead8),
+         P1_SS = ((Lead1 + Lead2 + Lead3)/3),
+         P2_SS = ((Lead4 + Lead5 + Lead6)/3),
+         P3_SS = (Lead7 + Lead8 + Lead9)/ 3)
+        
+## Apply standard error to all the rows.
+
+SA_RL_SS$P1_se <- apply(SA_RL_SS[, c("Lead1","Lead2","Lead3")],1,std.error)
+SA_RL_SS$P2_se <- apply(SA_RL_SS[, c("Lead4","Lead5","Lead6")],1,std.error)
+SA_RL_SS$P3_se <- apply(SA_RL_SS[, c("Lead7","Lead8","Lead9")],1,std.error)
+
+SA_RL_SS <- SA_RL_SS %>%
+  na.omit() %>%
+  pivot_longer(cols=c(P1_SS, P2_SS, P3_SS), names_to = "Phase", values_to = "P_SS") %>%
+  pivot_longer(cols=c(P1_se, P2_se, P3_se), names_to = "Phase_se", values_to = "P_se") %>%
+  mutate(Phase_se = if_else(Phase_se == "P1_se", "P1_SS", Phase_se),
+         Phase_se = if_else(Phase_se == "P2_se", "P2_SS", Phase_se),
+         Phase_se = if_else(Phase_se == "P3_se", "P3_SS", Phase_se)) %>%
+  filter(Phase_se == Phase) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  filter(Date == DateX) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_SS_K, ) %>%
+  mutate(Keep = Phase_se[which.min(P_se)]) %>%
+  filter(Keep == Phase_se)
+
+
+SA_SS_RL <- SA_RL_SS %>%
+  ungroup() %>%
+  mutate(Dx = (P_SS - Ant_SS_K),
+         abs_Dx = abs(Dx)) %>%
+  mutate(RL = ((2*Abs_SS_Diff)/ (Abs_SS_Diff + abs_Dx)) - 1)
+
+```
+
+### Plot
+
+```{r}
+
+SA_SS_RL %>%
+  ggplot(aes(x=Ant_SS_K, y=RL, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+
+################################################################################
+
+# Epilimnion Temperature
+
+```{r}
+SA_C_ET <- SA_Dist_Data %>%
+  mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  select(Event, Start.Date, End.Date, Date, Epi.Temp) %>%
+  mutate(Lag1 = lag(Epi.Temp),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_ET = (Lag1 + Lag2 + Lag3)/3,
+         Ant_ET_K = if_else(Start.Date == Date, Ant_ET, 0),
+         Ant_ET_K = if_else(Ant_ET_K == 0, max(Ant_ET_K), Ant_ET_K),
+         ET_Diff = Epi.Temp - Ant_ET_K,
+         Abs_ET_Diff = abs(ET_Diff)) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_ET_K) %>%
+  summarise(Abs_ET_Diff = max(Abs_ET_Diff))
+
+
+SA_ET_RS <- SA_C_ET %>%
+  mutate(RS = (1 - ((2*Abs_ET_Diff)/(Ant_ET_K+Abs_ET_Diff)))) %>%
+  filter(Event_ID != 22)
+
+```
+
+### Plot
+
+```{r}
+
+SA_ET_RS %>%
+  ggplot(aes(x=Ant_ET_K, y=RS, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+
+
+## Resilience
+
+```{r}
+
+SA_RL_ET <- SA_Dist_Data %>%
+  mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  select(Event, Start.Date, End.Date, Date, Epi.Temp) %>%
+  mutate(Lag1 = lag(Epi.Temp),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_ET = (Lag1 + Lag2 + Lag3)/3,
+         Ant_ET_K = if_else(Start.Date == Date, Ant_ET, 0),
+         Ant_ET_K = if_else(Ant_ET_K == 0, max(Ant_ET_K), Ant_ET_K),
+         ET_Diff = Epi.Temp - Ant_ET_K,
+         Abs_ET_Diff = abs(ET_Diff),
+         DateX = Date[which.max(Abs_ET_Diff)]) %>%
+  ungroup() %>%
+  mutate(Lead1 = lead(Epi.Temp),
+         Lead2 = lead(Lead1),
+         Lead3 = lead(Lead2), 
+         Lead4 = lead(Lead3),
+         Lead5 = lead(Lead4),
+         Lead6 = lead(Lead5),
+         Lead7 = lead(Lead6),
+         Lead8 = lead(Lead7),
+         Lead9 = lead(Lead8),
+         P1_ET = ((Lead1 + Lead2 + Lead3)/3),
+         P2_ET = ((Lead4 + Lead5 + Lead6)/3),
+         P3_ET = (Lead7 + Lead8 + Lead9)/ 3)
+        
+## Apply standard error to all the rows.
+
+SA_RL_ET$P1_se <- apply(SA_RL_ET[, c("Lead1","Lead2","Lead3")],1,std.error)
+SA_RL_ET$P2_se <- apply(SA_RL_ET[, c("Lead4","Lead5","Lead6")],1,std.error)
+SA_RL_ET$P3_se <- apply(SA_RL_ET[, c("Lead7","Lead8","Lead9")],1,std.error)
+
+SA_RL_ET <- SA_RL_ET %>%
+  na.omit() %>%
+  pivot_longer(cols=c(P1_ET, P2_ET, P3_ET), names_to = "Phase", values_to = "P_ET") %>%
+  pivot_longer(cols=c(P1_se, P2_se, P3_se), names_to = "Phase_se", values_to = "P_se") %>%
+  mutate(Phase_se = if_else(Phase_se == "P1_se", "P1_ET", Phase_se),
+         Phase_se = if_else(Phase_se == "P2_se", "P2_ET", Phase_se),
+         Phase_se = if_else(Phase_se == "P3_se", "P3_ET", Phase_se)) %>%
+  filter(Phase_se == Phase) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  filter(Date == DateX) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_ET_K) %>%
+  mutate(Keep = Phase_se[which.min(P_se)]) %>%
+  filter(Keep == Phase_se)
+
+
+SA_ET_RL <- SA_RL_ET %>%
+  ungroup() %>%
+  mutate(Dx = (P_ET - Ant_ET_K),
+         abs_Dx = abs(Dx)) %>%
+  mutate(RL = ((2*Abs_ET_Diff)/ (Abs_ET_Diff + abs_Dx)) - 1)
+
+```
+
+### Plot
+
+```{r}
+
+SA_ET_RL %>%
+  ggplot(aes(x=Ant_ET_K, y=RL, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+
+###############################################################################
+
+# Turbidity
+```{r}
+SA_C_TB <- SA_Dist_Data %>%
+  mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  dplyr::select(Event, Start.Date, End.Date, Date, Avg_Turbid) %>%
+  mutate(Lag1 = lag(Avg_Turbid),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_TB = (Lag1 + Lag2 + Lag3)/3,
+         Ant_TB_K = if_else(Start.Date == Date, Ant_TB, 0),
+         Ant_TB_K = if_else(Ant_TB_K == 0, max(Ant_TB_K), Ant_TB_K),
+         TB_Diff = Avg_Turbid - Ant_TB_K,
+         Abs_TB_Diff = abs(TB_Diff)) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_TB_K) %>%
+  summarise(Abs_TB_Diff = max(Abs_TB_Diff))
+
+
+SA_TB_RS <- SA_C_TB %>%
+  mutate(RS = (1 - ((2*Abs_TB_Diff)/(Ant_TB_K+Abs_TB_Diff)))) %>%
+  filter(Event_ID != 22)
+
+```
+
+### Plot
+
+```{r}
+
+SA_TB_RS %>%
+  ggplot(aes(x=Ant_TB_K, y=RS, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+
+
+## Resilience
+
+```{r}
+
+SA_RL_TB <- SA_Dist_Data %>%
+  mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  dplyr::select(Event, Start.Date, End.Date, Date, Avg_Turbid) %>%
+  mutate(Lag1 = lag(Avg_Turbid),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_TB = (Lag1 + Lag2 + Lag3)/3,
+         Ant_TB_K = if_else(Start.Date == Date, Ant_TB, 0),
+         Ant_TB_K = if_else(Ant_TB_K == 0, max(Ant_TB_K), Ant_TB_K),
+         TB_Diff = Avg_Turbid - Ant_TB_K,
+         Abs_TB_Diff = abs(TB_Diff),
+         DateX = Date[which.max(Abs_TB_Diff)]) %>%
+  ungroup() %>%
+  mutate(Lead1 = lead(Avg_Turbid),
+         Lead2 = lead(Lead1),
+         Lead3 = lead(Lead2), 
+         Lead4 = lead(Lead3),
+         Lead5 = lead(Lead4),
+         Lead6 = lead(Lead5),
+         Lead7 = lead(Lead6),
+         Lead8 = lead(Lead7),
+         Lead9 = lead(Lead8),
+         P1_TB = ((Lead1 + Lead2 + Lead3)/3),
+         P2_TB = ((Lead4 + Lead5 + Lead6)/3),
+         P3_TB = (Lead7 + Lead8 + Lead9)/ 3)
+        
+## Apply standard error to all the rows.
+
+SA_RL_TB$P1_se <- apply(SA_RL_TB[, c("Lead1","Lead2","Lead3")],1,std.error)
+SA_RL_TB$P2_se <- apply(SA_RL_TB[, c("Lead4","Lead5","Lead6")],1,std.error)
+SA_RL_TB$P3_se <- apply(SA_RL_TB[, c("Lead7","Lead8","Lead9")],1,std.error)
+
+SA_RL_TB <- SA_RL_TB %>%
+  na.omit() %>%
+  pivot_longer(cols=c(P1_TB, P2_TB, P3_TB), names_to = "Phase", values_to = "P_TB") %>%
+  pivot_longer(cols=c(P1_se, P2_se, P3_se), names_to = "Phase_se", values_to = "P_se") %>%
+  mutate(Phase_se = if_else(Phase_se == "P1_se", "P1_TB", Phase_se),
+         Phase_se = if_else(Phase_se == "P2_se", "P2_TB", Phase_se),
+         Phase_se = if_else(Phase_se == "P3_se", "P3_TB", Phase_se)) %>%
+  filter(Phase_se == Phase) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  filter(Date == DateX) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_TB_K) %>%
+  mutate(Keep = Phase_se[which.min(P_se)]) %>%
+  filter(Keep == Phase_se)
+
+
+SA_TB_RL <- SA_RL_TB %>%
+  ungroup() %>%
+  mutate(Dx = (P_TB - Ant_TB_K),
+         abs_Dx = abs(Dx)) %>%
+  mutate(RL = ((2*Abs_TB_Diff)/ (Abs_TB_Diff + abs_Dx)) - 1)
+
+```
+
+### Plot
+
+```{r}
+
+SA_TB_RL %>%
+  ggplot(aes(x=Ant_TB_K, y=RL, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+################################################################################
+################################################################################
+################################################################################
+
+
+# Missisiquoi Bay: 
+
+```{r}
+MB_Dist_Data <- full_join(MB_Dist_Final, MB_PC, by="Date") %>%
+  full_join(., MB_Chl, by="Date") %>%
+  full_join(., MB_Turb, by="Date") %>%
+  full_join(., MB_Schmidt, by="Date") %>%
+  full_join(., MB_EpiTemp, by="Date") %>%
+  dplyr::select(-Cons_Days)
+
+MB_Dist_Data$Event <- replace_na(MB_Dist_Data$Event, "None")
+
+
+MB_Dist_Data <- MB_Dist_Data %>%
+  mutate(Date = as.Date(Date)) %>%
+  arrange(Date) %>%
+  mutate(Month = month(Date)) %>%
+  filter(Month > 5 & Month < 11) %>%
+  select(-Month)
+
+```
+
+
+
+# Phycocyanin
+
+## Resistence
+
+```{r}
+
+
+MB_C_PC <- MB_Dist_Data %>%
+  #mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  select(Start.Date, End.Date, Date, Event, Avg_PC) %>%
+  mutate(Lag1 = lag(Avg_PC),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_PC = (Lag1 + Lag2 + Lag3)/3,
+         Ant_PC_K = if_else(Start.Date == Date, Ant_PC, 0),
+         Ant_PC_K = if_else(Ant_PC_K == 0, max(Ant_PC_K), Ant_PC_K),
+         PC_Diff = Avg_PC - Ant_PC_K,
+         Abs_PC_Diff = abs(PC_Diff)) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_PC_K) %>%
+  filter(Abs_PC_Diff == max(Abs_PC_Diff))
+  #summarise(Abs_PC_Diff = max(Abs_PC_Diff))
+
+```
+
+Now we have the absolute value of the greatest change of PC during the event. 
+
+Next we want to calculate the resistance metric. 
+
+RS = 1 - [(2 * |Do|)/(C + |Do|)]
+
+```{r}
+
+MB_PC_RS <- MB_C_PC %>%
+  mutate(RS = (1 - ((2*Abs_PC_Diff)/(Ant_PC_K+Abs_PC_Diff)))) %>%
+  filter(Event_ID != 100 & Event_ID != 117)
+
+
+```
+
+We needed to remove the 2020-07-11 date. It looks like this is buoy deployment. 
+
+Resitance will be described in values between -1 and 1, where a value of 1 indicates maximum resistance. A resistance of zero means there has been a 100% re3duction or inhancement in the observed variable. 
+
+
+Let's look at the range of resistence in a box plot, as well as the average resistence and standard deviation.
+
+```{r}
+MB_PC_RS %>%
+  ggplot(aes(x=Start.Date, y=RS, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+It looks like over time, St. Albans phytoplankton have similar levels of resistance across the years. Maybe 2021 had less resistence on average. 
+
+```{r}
+MB_PC_RS %>%
+  ggplot(aes(x=PC_Diff, y=RS, color=Event)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = 2) +
+  theme_classic() +
+  ylab("Phycocyanin (RFU) Resistance") +
+  xlab("\u2206 Phycocyanin (RFU)") +
+  ylim(-1,1)
+
+```
+Interestingly, we see that phycocyanin resistence to heat waves decreases after PC RFU is higher than 2 prior to the heatwave. Below 2 RFU, the results are extremeley variable. 
+
+# Resilience: 
+
+
+```{r}
+MB_RL_PC <- MB_Dist_Data %>%
+  #mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  select(Start.Date, End.Date, Date, Avg_PC, Event) %>%
+  mutate(Lag1 = lag(Avg_PC),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_PC = (Lag1 + Lag2 + Lag3)/3,
+         Ant_PC_K = if_else(Start.Date == Date, Ant_PC, 0),
+         Ant_PC_K = if_else(Ant_PC_K == 0, max(Ant_PC_K), Ant_PC_K),
+         PC_Diff = Avg_PC - Ant_PC_K,
+         Abs_PC_Diff = abs(PC_Diff),
+         DateX = Date[which.max(Abs_PC_Diff)]) %>%
+  ungroup() %>%
+  mutate(Lead1 = lead(Avg_PC),
+         Lead2 = lead(Lead1),
+         Lead3 = lead(Lead2), 
+         Lead4 = lead(Lead3),
+         Lead5 = lead(Lead4),
+         Lead6 = lead(Lead5),
+         Lead7 = lead(Lead6),
+         Lead8 = lead(Lead7),
+         Lead9 = lead(Lead8),
+         P1_PC = ((Lead1 + Lead2 + Lead3)/3),
+         P2_PC = ((Lead4 + Lead5 + Lead6)/3),
+         P3_PC = (Lead7 + Lead8 + Lead9)/ 3)
+        
+## Apply standard error to all the rows.
+
+MB_RL_PC$P1_se <- apply(MB_RL_PC[, c("Lead1","Lead2","Lead3")],1,std.error)
+MB_RL_PC$P2_se <- apply(MB_RL_PC[, c("Lead4","Lead5","Lead6")],1,std.error)
+MB_RL_PC$P3_se <- apply(MB_RL_PC[, c("Lead7","Lead8","Lead9")],1,std.error)
+
+MB_RL_PC <- MB_RL_PC %>%
+  na.omit() %>%
+  pivot_longer(cols=c(P1_PC, P2_PC, P3_PC), names_to = "Phase", values_to = "P_PC") %>%
+  pivot_longer(cols=c(P1_se, P2_se, P3_se), names_to = "Phase_se", values_to = "P_se") %>%
+  mutate(Phase_se = if_else(Phase_se == "P1_se", "P1_PC", Phase_se),
+         Phase_se = if_else(Phase_se == "P2_se", "P2_PC", Phase_se),
+         Phase_se = if_else(Phase_se == "P3_se", "P3_PC", Phase_se)) %>%
+  filter(Phase_se == Phase) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  filter(Date == DateX) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_PC_K) %>%
+  mutate(Keep = Phase_se[which.min(P_se)]) %>%
+  filter(Keep == Phase_se)
+
+```
+
+Now we can calculate the resilience!!
+
+```{r}
+
+MB_PC_RL <- MB_RL_PC %>%
+  ungroup() %>%
+  mutate(Dx = (P_PC - Ant_PC_K),
+         abs_Dx = abs(Dx)) %>%
+  mutate(RL = ((2*Abs_PC_Diff)/ (Abs_PC_Diff + abs_Dx)) - 1)
+
+```
+
+
+Now we can graph the resilience: 
+
+-1: Negative values here suggest that the parameter continued to move away from baseline conditions.
+
+0: There was no recovery: (e.g., D0 = Dx)
+
+1: Value of 1 means maximum resilience, where the system recovered quickly. 
+
+```{r}
+
+MB_PC_RL %>%
+  ggplot(aes(x=Ant_PC_K, y=RL, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+
+Similarly to Thayne et al. 2022, there was little recovery, which could be a result of seasonality. That's why they decompose the time series prior to running these analyses. 
+
+
+###############################################################################
+# Chlorophyll: 
+
+## Resistance
+
+```{r}
+MB_C_CHL <- MB_Dist_Data %>%
+  #mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  select(Start.Date, End.Date, Date, Avg_Chl, Event) %>%
+  mutate(Lag1 = lag(Avg_Chl),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_Chl = (Lag1 + Lag2 + Lag3)/3,
+         Ant_Chl_K = if_else(Start.Date == Date, Ant_Chl, 0),
+         Ant_Chl_K = if_else(Ant_Chl_K == 0, max(Ant_Chl_K), Ant_Chl_K),
+         Chl_Diff = Avg_Chl - Ant_Chl_K,
+         Abs_Chl_Diff = abs(Chl_Diff)) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_Chl_K) %>%
+  summarise(Abs_Chl_Diff = max(Abs_Chl_Diff))
+
+
+MB_Chl_RS <- MB_C_CHL %>%
+  mutate(RS = (1 - ((2*Abs_Chl_Diff)/(Ant_Chl_K+Abs_Chl_Diff)))) %>%
+  filter(Event_ID != 100 & Event_ID != 117)
+
+```
+
+### Plot
+
+```{r}
+
+MB_Chl_RS %>%
+  ggplot(aes(x=Ant_Chl_K, y=RS, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+
+## Resilience
+
+```{r}
+
+MB_RL_CHL <- MB_Dist_Data %>%
+  #mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  select(Event, Start.Date, End.Date, Date, Avg_Chl) %>%
+  mutate(Lag1 = lag(Avg_Chl),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_Chl = (Lag1 + Lag2 + Lag3)/3,
+         Ant_Chl_K = if_else(Start.Date == Date, Ant_Chl, 0),
+         Ant_Chl_K = if_else(Ant_Chl_K == 0, max(Ant_Chl_K), Ant_Chl_K),
+         Chl_Diff = Avg_Chl - Ant_Chl_K,
+         Abs_Chl_Diff = abs(Chl_Diff),
+         DateX = Date[which.max(Abs_Chl_Diff)]) %>%
+  ungroup() %>%
+  mutate(Lead1 = lead(Avg_Chl),
+         Lead2 = lead(Lead1),
+         Lead3 = lead(Lead2), 
+         Lead4 = lead(Lead3),
+         Lead5 = lead(Lead4),
+         Lead6 = lead(Lead5),
+         Lead7 = lead(Lead6),
+         Lead8 = lead(Lead7),
+         Lead9 = lead(Lead8),
+         P1_Chl = ((Lead1 + Lead2 + Lead3)/3),
+         P2_Chl = ((Lead4 + Lead5 + Lead6)/3),
+         P3_Chl = (Lead7 + Lead8 + Lead9)/ 3)
+        
+## Apply standard error to all the rows.
+
+MB_RL_CHL$P1_se <- apply(MB_RL_CHL[, c("Lead1","Lead2","Lead3")],1,std.error)
+MB_RL_CHL$P2_se <- apply(MB_RL_CHL[, c("Lead4","Lead5","Lead6")],1,std.error)
+MB_RL_CHL$P3_se <- apply(MB_RL_CHL[, c("Lead7","Lead8","Lead9")],1,std.error)
+
+MB_RL_CHL <- MB_RL_CHL %>%
+  na.omit() %>%
+  pivot_longer(cols=c(P1_Chl, P2_Chl, P3_Chl), names_to = "Phase", values_to = "P_Chl") %>%
+  pivot_longer(cols=c(P1_se, P2_se, P3_se), names_to = "Phase_se", values_to = "P_se") %>%
+  mutate(Phase_se = if_else(Phase_se == "P1_se", "P1_Chl", Phase_se),
+         Phase_se = if_else(Phase_se == "P2_se", "P2_Chl", Phase_se),
+         Phase_se = if_else(Phase_se == "P3_se", "P3_Chl", Phase_se)) %>%
+  filter(Phase_se == Phase) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  filter(Date == DateX) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_Chl_K, ) %>%
+  mutate(Keep = Phase_se[which.min(P_se)]) %>%
+  filter(Keep == Phase_se)
+
+
+MB_Chl_RL <- MB_RL_CHL %>%
+  ungroup() %>%
+  mutate(Dx = (P_Chl - Ant_Chl_K),
+         abs_Dx = abs(Dx)) %>%
+  mutate(RL = ((2*Abs_Chl_Diff)/ (Abs_Chl_Diff + abs_Dx)) - 1)
+
+```
+
+### Plot
+
+```{r}
+
+MB_Chl_RL %>%
+  ggplot(aes(x=Ant_Chl_K, y=RL, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+################################################################################
+
+# Schmidt Stability: 
+
+## Resistance
+
+```{r}
+MB_C_SS <- MB_Dist_Data %>%
+  #mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  select(Event, Start.Date, End.Date, Date, SS) %>%
+  mutate(Lag1 = lag(SS),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID= rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_SS = (Lag1 + Lag2 + Lag3)/3,
+         Ant_SS_K = if_else(Start.Date == Date, Ant_SS, 0),
+         Ant_SS_K = if_else(Ant_SS_K == 0, max(Ant_SS_K), Ant_SS_K),
+         SS_Diff = SS - Ant_SS_K,
+         Abs_SS_Diff = abs(SS_Diff)) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_SS_K) %>%
+  summarise(Abs_SS_Diff = max(Abs_SS_Diff))
+
+
+MB_SS_RS <- MB_C_SS %>%
+  mutate(RS = (1 - ((2*Abs_SS_Diff)/(Ant_SS_K+Abs_SS_Diff)))) %>%
+  filter(Event_ID != 100 & Event_ID != 117)
+
+```
+
+### Plot
+
+```{r}
+
+MB_SS_RS %>%
+  ggplot(aes(x=Ant_SS_K, y=RS, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+
+## Resilience
+
+```{r}
+
+MB_RL_SS <- MB_Dist_Data %>%
+  #mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  select(Event, Start.Date, End.Date, Date, SS) %>%
+  mutate(Lag1 = lag(SS),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_SS = (Lag1 + Lag2 + Lag3)/3,
+         Ant_SS_K = if_else(Start.Date == Date, Ant_SS, 0),
+         Ant_SS_K = if_else(Ant_SS_K == 0, max(Ant_SS_K), Ant_SS_K),
+         SS_Diff = SS - Ant_SS_K,
+         Abs_SS_Diff = abs(SS_Diff),
+         DateX = Date[which.max(Abs_SS_Diff)]) %>%
+  ungroup() %>%
+  mutate(Lead1 = lead(SS),
+         Lead2 = lead(Lead1),
+         Lead3 = lead(Lead2), 
+         Lead4 = lead(Lead3),
+         Lead5 = lead(Lead4),
+         Lead6 = lead(Lead5),
+         Lead7 = lead(Lead6),
+         Lead8 = lead(Lead7),
+         Lead9 = lead(Lead8),
+         P1_SS = ((Lead1 + Lead2 + Lead3)/3),
+         P2_SS = ((Lead4 + Lead5 + Lead6)/3),
+         P3_SS = (Lead7 + Lead8 + Lead9)/ 3)
+        
+## Apply standard error to all the rows.
+
+MB_RL_SS$P1_se <- apply(MB_RL_SS[, c("Lead1","Lead2","Lead3")],1,std.error)
+MB_RL_SS$P2_se <- apply(MB_RL_SS[, c("Lead4","Lead5","Lead6")],1,std.error)
+MB_RL_SS$P3_se <- apply(MB_RL_SS[, c("Lead7","Lead8","Lead9")],1,std.error)
+
+MB_RL_SS <- MB_RL_SS %>%
+  na.omit() %>%
+  pivot_longer(cols=c(P1_SS, P2_SS, P3_SS), names_to = "Phase", values_to = "P_SS") %>%
+  pivot_longer(cols=c(P1_se, P2_se, P3_se), names_to = "Phase_se", values_to = "P_se") %>%
+  mutate(Phase_se = if_else(Phase_se == "P1_se", "P1_SS", Phase_se),
+         Phase_se = if_else(Phase_se == "P2_se", "P2_SS", Phase_se),
+         Phase_se = if_else(Phase_se == "P3_se", "P3_SS", Phase_se)) %>%
+  filter(Phase_se == Phase) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  filter(Date == DateX) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_SS_K, ) %>%
+  mutate(Keep = Phase_se[which.min(P_se)]) %>%
+  filter(Keep == Phase_se)
+
+
+MB_SS_RL <- MB_RL_SS %>%
+  ungroup() %>%
+  mutate(Dx = (P_SS - Ant_SS_K),
+         abs_Dx = abs(Dx)) %>%
+  mutate(RL = ((2*Abs_SS_Diff)/ (Abs_SS_Diff + abs_Dx)) - 1)
+
+```
+
+### Plot
+
+```{r}
+
+MB_SS_RL %>%
+  ggplot(aes(x=Ant_SS_K, y=RL, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+
+###############################################################################
+
+# Epilimnion Temperature
+
+```{r}
+MB_C_ET <- MB_Dist_Data %>%
+  #mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  select(Event, Start.Date, End.Date, Date, Epi.Temp) %>%
+  mutate(Lag1 = lag(Epi.Temp),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_ET = (Lag1 + Lag2 + Lag3)/3,
+         Ant_ET_K = if_else(Start.Date == Date, Ant_ET, 0),
+         Ant_ET_K = if_else(Ant_ET_K == 0, max(Ant_ET_K), Ant_ET_K),
+         ET_Diff = Epi.Temp - Ant_ET_K,
+         Abs_ET_Diff = abs(ET_Diff)) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_ET_K) %>%
+  summarise(Abs_ET_Diff = max(Abs_ET_Diff))
+
+
+MB_ET_RS <- MB_C_ET %>%
+  mutate(RS = (1 - ((2*Abs_ET_Diff)/(Ant_ET_K+Abs_ET_Diff)))) %>%
+  filter(Event_ID != 100 & Event_ID != 117)
+
+```
+
+### Plot
+
+```{r}
+
+MB_ET_RS %>%
+  ggplot(aes(x=Ant_ET_K, y=RS, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+
+
+## Resilience
+
+```{r}
+
+MB_RL_ET <- MB_Dist_Data %>%
+  #mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  select(Event, Start.Date, End.Date, Date, Epi.Temp) %>%
+  mutate(Lag1 = lag(Epi.Temp),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_ET = (Lag1 + Lag2 + Lag3)/3,
+         Ant_ET_K = if_else(Start.Date == Date, Ant_ET, 0),
+         Ant_ET_K = if_else(Ant_ET_K == 0, max(Ant_ET_K), Ant_ET_K),
+         ET_Diff = Epi.Temp - Ant_ET_K,
+         Abs_ET_Diff = abs(ET_Diff),
+         DateX = Date[which.max(Abs_ET_Diff)]) %>%
+  ungroup() %>%
+  mutate(Lead1 = lead(Epi.Temp),
+         Lead2 = lead(Lead1),
+         Lead3 = lead(Lead2), 
+         Lead4 = lead(Lead3),
+         Lead5 = lead(Lead4),
+         Lead6 = lead(Lead5),
+         Lead7 = lead(Lead6),
+         Lead8 = lead(Lead7),
+         Lead9 = lead(Lead8),
+         P1_ET = ((Lead1 + Lead2 + Lead3)/3),
+         P2_ET = ((Lead4 + Lead5 + Lead6)/3),
+         P3_ET = (Lead7 + Lead8 + Lead9)/ 3)
+        
+## Apply standard error to all the rows.
+
+MB_RL_ET$P1_se <- apply(MB_RL_ET[, c("Lead1","Lead2","Lead3")],1,std.error)
+MB_RL_ET$P2_se <- apply(MB_RL_ET[, c("Lead4","Lead5","Lead6")],1,std.error)
+MB_RL_ET$P3_se <- apply(MB_RL_ET[, c("Lead7","Lead8","Lead9")],1,std.error)
+
+MB_RL_ET <- MB_RL_ET %>%
+  na.omit() %>%
+  pivot_longer(cols=c(P1_ET, P2_ET, P3_ET), names_to = "Phase", values_to = "P_ET") %>%
+  pivot_longer(cols=c(P1_se, P2_se, P3_se), names_to = "Phase_se", values_to = "P_se") %>%
+  mutate(Phase_se = if_else(Phase_se == "P1_se", "P1_ET", Phase_se),
+         Phase_se = if_else(Phase_se == "P2_se", "P2_ET", Phase_se),
+         Phase_se = if_else(Phase_se == "P3_se", "P3_ET", Phase_se)) %>%
+  filter(Phase_se == Phase) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  filter(Date == DateX) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_ET_K) %>%
+  mutate(Keep = Phase_se[which.min(P_se)]) %>%
+  filter(Keep == Phase_se)
+
+
+MB_ET_RL <- MB_RL_ET %>%
+  ungroup() %>%
+  mutate(Dx = (P_ET - Ant_ET_K),
+         abs_Dx = abs(Dx)) %>%
+  mutate(RL = ((2*Abs_ET_Diff)/ (Abs_ET_Diff + abs_Dx)) - 1)
+
+```
+
+### Plot
+
+```{r}
+
+MB_ET_RL %>%
+  ggplot(aes(x=Ant_ET_K, y=RL, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+
+# Turbidity
+```{r}
+MB_C_TB <- MB_Dist_Data %>%
+  dplyr::select(Event, Start.Date, End.Date, Date, Avg_Turbid) %>%
+  mutate(Lag1 = lag(Avg_Turbid),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_TB = (Lag1 + Lag2 + Lag3)/3,
+         Ant_TB_K = if_else(Start.Date == Date, Ant_TB, 0),
+         Ant_TB_K = if_else(Ant_TB_K == 0, max(Ant_TB_K), Ant_TB_K),
+         TB_Diff = Avg_Turbid - Ant_TB_K,
+         Abs_TB_Diff = abs(TB_Diff)) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_TB_K) %>%
+  summarise(Abs_TB_Diff = max(Abs_TB_Diff))
+
+
+MB_TB_RS <- MB_C_TB %>%
+  mutate(RS = (1 - ((2*Abs_TB_Diff)/(Ant_TB_K+Abs_TB_Diff)))) %>%
+  filter(Event_ID != 100 & Event_ID != 117)
+
+```
+
+### Plot
+
+```{r}
+
+MB_TB_RS %>%
+  ggplot(aes(x=Ant_TB_K, y=RS, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+
+
+## Resilience
+
+```{r}
+
+MB_RL_TB <- MB_Dist_Data %>%
+  mutate(Date = if_else(Date == as.Date("2021-08-21"), as.Date("2021-08-20"), Date)) %>%
+  dplyr::select(Event, Start.Date, End.Date, Date, Avg_Turbid) %>%
+  mutate(Lag1 = lag(Avg_Turbid),
+         Lag2 = lag(Lag1),
+         Lag3 = lag(Lag2), 
+         Event_ID = rleid(Start.Date),
+         Start.Date = if_else(is.na(Start.Date), as.Date("2000-01-01"), Start.Date),
+         End.Date = if_else(is.na(End.Date), as.Date("2000-01-01"), End.Date)) %>%
+  na.omit() %>%
+  group_by(Event, Event_ID) %>%
+  mutate(Ant_TB = (Lag1 + Lag2 + Lag3)/3,
+         Ant_TB_K = if_else(Start.Date == Date, Ant_TB, 0),
+         Ant_TB_K = if_else(Ant_TB_K == 0, max(Ant_TB_K), Ant_TB_K),
+         TB_Diff = Avg_Turbid - Ant_TB_K,
+         Abs_TB_Diff = abs(TB_Diff),
+         DateX = Date[which.max(Abs_TB_Diff)]) %>%
+  ungroup() %>%
+  mutate(Lead1 = lead(Avg_Turbid),
+         Lead2 = lead(Lead1),
+         Lead3 = lead(Lead2), 
+         Lead4 = lead(Lead3),
+         Lead5 = lead(Lead4),
+         Lead6 = lead(Lead5),
+         Lead7 = lead(Lead6),
+         Lead8 = lead(Lead7),
+         Lead9 = lead(Lead8),
+         P1_TB = ((Lead1 + Lead2 + Lead3)/3),
+         P2_TB = ((Lead4 + Lead5 + Lead6)/3),
+         P3_TB = (Lead7 + Lead8 + Lead9)/ 3)
+        
+## Apply standard error to all the rows.
+
+MB_RL_TB$P1_se <- apply(MB_RL_TB[, c("Lead1","Lead2","Lead3")],1,std.error)
+MB_RL_TB$P2_se <- apply(MB_RL_TB[, c("Lead4","Lead5","Lead6")],1,std.error)
+MB_RL_TB$P3_se <- apply(MB_RL_TB[, c("Lead7","Lead8","Lead9")],1,std.error)
+
+MB_RL_TB <- MB_RL_TB %>%
+  na.omit() %>%
+  pivot_longer(cols=c(P1_TB, P2_TB, P3_TB), names_to = "Phase", values_to = "P_TB") %>%
+  pivot_longer(cols=c(P1_se, P2_se, P3_se), names_to = "Phase_se", values_to = "P_se") %>%
+  mutate(Phase_se = if_else(Phase_se == "P1_se", "P1_TB", Phase_se),
+         Phase_se = if_else(Phase_se == "P2_se", "P2_TB", Phase_se),
+         Phase_se = if_else(Phase_se == "P3_se", "P3_TB", Phase_se)) %>%
+  filter(Phase_se == Phase) %>%
+  filter(Start.Date != as.Date("2000-01-01")) %>%
+  filter(Date == DateX) %>%
+  group_by(Event, Event_ID, Start.Date, End.Date, Ant_TB_K) %>%
+  mutate(Keep = Phase_se[which.min(P_se)]) %>%
+  filter(Keep == Phase_se)
+
+
+MB_TB_RL <- MB_RL_TB %>%
+  ungroup() %>%
+  mutate(Dx = (P_TB - Ant_TB_K),
+         abs_Dx = abs(Dx)) %>%
+  mutate(RL = ((2*Abs_TB_Diff)/ (Abs_TB_Diff + abs_Dx)) - 1)
+
+```
+
+### Plot
+
+```{r}
+
+MB_TB_RL %>%
+  ggplot(aes(x=Ant_TB_K, y=RL, color=Event)) +
+  geom_point() +
+  theme_minimal()
+
+```
+###############################################################################
+###############################################################################
+###############################################################################
+
+# Statistics for Resistance: 
+
+## Turbidity:
+
+```{r}
+MB_TB_RS  <- MB_TB_RS %>%
+  filter(Ant_TB_K > 0) %>%
+  mutate(Site = "MB") %>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+SA_TB_RS  <- SA_TB_RS %>%
+  filter(Ant_TB_K > 0) %>%
+  mutate(Site = "SA") %>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+TB_RS_Stat <- full_join(MB_TB_RS, SA_TB_RS)
+
+```
+
+
+## Phycocyanin: 
+```{r}
+
+MB_PC_RS  <- MB_PC_RS %>%
+  filter(Ant_PC_K > 0) %>%
+  mutate(Site = "MB") %>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+SA_PC_RS <- SA_PC_RS %>%
+  filter(Ant_PC_K > 0) %>%
+  mutate(Site = "SA") %>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+PC_RS_Stat <- full_join(MB_PC_RS, SA_PC_RS)
+
+## T-Test between sites: 
+
+shapiro.test(PC_RS_Stat$RS)
+
+test <- t.test(RS ~ Site, data=PC_RS_Stat)
+# The data is not normally distributed. Opt for the Wilcoxon Test.
+
+print(test)
+
+PC_RS_Stat %>%
+  group_by(Site) %>%
+  summarize(avg_rs = mean(RS),
+            std.rs = sd(RS))
+
+# Anova within Sites
+
+## SA
+
+shapiro.test(SA_PC_RS$RS)
+### The data is normally distributed
+
+
+test <- kruskal.test(RS ~ Event, data=SA_PC_RS)
+
+print(test)
+
+SA_PC_RS %>%
+  group_by(Event) %>%
+  summarize(avg_rs = mean(RS),
+            std.rs = sd(RS))
+
+## MB
+
+shapiro.test(MB_PC_RS$RS)
+### The data is normally distributed.
+
+test <- aov(RS ~ Event, data=MB_PC_RS)
+summary(test)
+
+TukeyHSD(test)
+
+```
+
+There is a significant difference in resistance of phycocyanin to extreme events between the Lakes. For instance, St. Albans Bay had a higher average mean resistance across all extreme weather events compared to Missisquoi Bay. 
+
+That leads to the question, of what leads to higher resistance in St. Albans Bay vs. Missisquoi Bay?
+
+
+```{r}
+PC_RS_Stat %>%
+  ggplot(aes(x=PC_Diff, y=RS, color=Site)) +
+  geom_point() +
+  geom_smooth() +
+  theme_classic()
+
+```
+
+## Chlorophyll
+
+```{r}
+
+MB_Chl_RS  <- MB_Chl_RS %>%
+  filter(Ant_Chl_K > 0) %>%
+  mutate(Site = "MB")%>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+SA_Chl_RS  <- SA_Chl_RS %>%
+  filter(Ant_Chl_K > 0) %>%
+  mutate(Site = "SA") %>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+Chl_RS_Stat <- full_join(MB_Chl_RS, SA_Chl_RS)
+
+## T-Test between sites: 
+
+shapiro.test(Chl_RS_Stat$RS)
+
+test <- wilcox.test(RS ~ Site, data=Chl_RS_Stat)
+# The data is not normally distributed. Opt for the Wilcoxon Test.
+
+print(test)
+# the response in chlorophyll is not statistically different.
+
+Chl_RS_Stat %>%
+  group_by(Site) %>%
+  summarize(avg_rs = mean(RS),
+            std.rs = sd(RS))
+
+Chl_RS_Stat %>%
+  ggplot(aes(x=Site, y=RS, fill=Site)) +
+  geom_boxplot() +
+  theme_classic()
+
+```
+```{r}
+
+# Anova within Sites
+
+## SA
+
+shapiro.test(SA_Chl_RS$RS)
+### The data is normally distributed
+
+library(pgirmess)
+
+test <- aov(RS ~ Event, data=SA_Chl_RS)
+summary(test)
+
+TukeyHSD(test)
+
+SA_Chl_RS %>%
+  group_by(Event) %>%
+  summarize(avg_rs = mean(RS),
+            sd_rs = sd(RS))
+
+## MB
+
+shapiro.test(MB_Chl_RS$RS)
+### The data is normally distributed.
+
+test <- kruskalmc(RS ~ Event, data=MB_Chl_RS)
+
+test$dif.com %>%
+    filter(stat.signif == "TRUE")
+
+```
+## Schmidt Stability
+
+```{r}
+
+MB_SS_RS  <- MB_SS_RS %>%
+  #filter(Ant_Chl_K > 0) %>%
+  mutate(Site = "MB") %>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+SA_SS_RS  <- SA_SS_RS %>%
+  #filter(Ant_Chl_K > 0) %>%
+  mutate(Site = "SA") %>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+SS_RS_Stat <- full_join(MB_SS_RS, SA_SS_RS)
+
+SS_RS_Stat %>%
+  group_by(Site) %>%
+  summarize(avg_rs = mean(RS),
+            sd_rs = sd(RS))
+
+## T-Test between sites: 
+
+shapiro.test(SS_RS_Stat$RS)
+
+test <- wilcox.test(RS ~ Site, data=SS_RS_Stat)
+# The data is not normally distributed. Opt for the Wilcoxon Test.
+
+print(test)
+## Significantly different
+
+```
+
+```{r}
+
+# Anova within Sites
+
+## SA
+
+shapiro.test(SA_SS_RS$RS)
+### The data is normally distributed
+
+library(pgirmess)
+
+test <- kruskalmc(RS ~ Event, data=SA_SS_RS)
+
+test$dif.com %>%
+  filter(stat.signif == "TRUE")
+
+## MB
+
+shapiro.test(MB_SS_RS$RS)
+### The data is normally distributed.
+
+test <- kruskalmc(RS ~ Event, data=MB_SS_RS)
+
+test$dif.com %>%
+  filter(stat.signif == "TRUE")
+```
+
+
+## Epilimnion Temperature
+
+```{r}
+
+MB_ET_RS  <- MB_ET_RS %>%
+  filter(Ant_ET_K > 0) %>%
+  mutate(Site = "MB")%>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+SA_ET_RS  <- SA_ET_RS %>%
+  filter(Ant_ET_K > 0) %>%
+  mutate(Site = "SA")%>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+ET_RS_Stat <- full_join(MB_ET_RS, SA_ET_RS)
+
+ET_RS_Stat %>%
+  group_by(Site) %>%
+  summarize(avg_rs = mean(RS),
+            sd_rs = sd(RS))
+
+## T-Test between sites: 
+
+shapiro.test(ET_RS_Stat$RS)
+
+test <- wilcox.test(RS ~ Site, data=ET_RS_Stat)
+# The data is not normally distributed. Opt for the Wilcoxon Test.
+
+print(test)
+# the response in chlorophyll is not statistically different.
+
+```
+
+```{r}
+
+# Anova within Sites
+
+## SA
+
+shapiro.test(SA_ET_RS$RS)
+### The data is normally distributed
+
+test <- kruskalmc(RS ~ Event, data=SA_ET_RS)
+
+test$dif.com %>%
+  filter(stat.signif == "TRUE")
+
+SA_ET_RS %>%
+  group_by(Event) %>%
+  summarize(avg_rs = mean(RS),
+            sd_rs = sd(RS))
+
+## MB
+
+shapiro.test(MB_ET_RS$RS)
+### The data is normally distributed.
+
+test <- kruskalmc(RS ~ Event, data=MB_ET_RS)
+
+test$dif.com %>%
+  filter(stat.signif == "TRUE")
+
+
+
+```
+
+
+
+# Statistics for Resilience: 
+
+## Phycocyanin: 
+```{r}
+
+MB_PC_RL  <- MB_PC_RL %>%
+  filter(Ant_PC_K > 0) %>%
+  mutate(Site = "MB") %>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+SA_PC_RL <- SA_PC_RL %>%
+  na.omit() %>%
+  filter(Ant_PC_K > 0) %>%
+  mutate(Site = "SA") %>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+PC_RL_Stat <- full_join(MB_PC_RL, SA_PC_RL)
+
+## T-Test between sites: 
+
+shapiro.test(PC_RL_Stat$RL)
+# The data is  normally distributed.
+
+test <- t.test(RL ~ Site, data=PC_RL_Stat)
+
+print(test)
+
+PC_RL_Stat %>%
+  group_by(Site) %>%
+  summarize(avg_rs = mean(RL),
+            std.rs = sd(RL))
+
+# Anova within Sites
+
+## SA
+
+shapiro.test(SA_PC_RL$RL)
+### The data is normally distributed
+
+test <- aov(RL ~ Event, data=SA_PC_RL)
+summary(test)
+
+TukeyHSD(test)
+
+## MB
+
+shapiro.test(MB_PC_RL$RL)
+### The data is normally distributed.
+
+test <- aov(RL ~ Event, data=MB_PC_RL)
+summary(test)
+
+TukeyHSD(test)
+
+```
+
+There is a significant difference in resistance of phycocyanin to extreme events between the Lakes. For instance, St. Albans Bay had a higher average mean resistance across all extreme weather events compared to Missisquoi Bay. 
+
+That leads to the question, of what leads to higher resistance in St. Albans Bay vs. Missisquoi Bay?
+
+
+```{r}
+PC_RL_Stat %>%
+  ggplot(aes(x=Ant_PC_K, y=RL, color=Site)) +
+  geom_point() +
+  geom_smooth() +
+  theme_classic()
+library(mgcv)
+
+test <- gam(RL~ s(Ant_PC_K), data=SA_PC_RL)
+summary(test)
+
+test <- gam(RL~ s(Ant_PC_K), data=MB_PC_RL)
+
+summary(test)
+
+```
+
+Antecedent phycoyanin levels had no effect on the resilience of phycocyanin. 
+
+## Chlorophyll
+
+```{r}
+
+MB_Chl_RL  <- MB_Chl_RL %>%
+  filter(Ant_Chl_K > 0) %>%
+  mutate(Site = "MB")%>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+
+SA_Chl_RL  <- SA_Chl_RL %>%
+  filter(Ant_Chl_K > 0) %>%
+  mutate(Site = "SA")%>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+
+Chl_RL_Stat <- full_join(MB_Chl_RL, SA_Chl_RL)
+
+
+Chl_RL_Stat %>%
+  group_by(Site) %>%
+  summarize(avg_rs = mean(RL),
+            std.rs = sd(RL))
+## T-Test between sites: 
+
+shapiro.test(Chl_RL_Stat$RL)
+
+test <- t.test(RL ~ Site, data=Chl_RL_Stat)
+# The data is not normally distributed. Opt for the Wilcoxon Test.
+
+print(test)
+# the response in chlorophyll is not statistically different.
+
+```
+```{r}
+
+# Anova within Sites
+
+## SA
+
+shapiro.test(SA_Chl_RL$RL)
+### The data is normally distributed
+
+library(pgirmess)
+
+test <- aov(RL ~ Event, data=SA_Chl_RL)
+summary(test)
+
+TukeyHSD(test)
+
+
+
+## MB
+
+shapiro.test(MB_Chl_RL$RL)
+### The data is normally distributed.
+
+test <- aov(RL ~ Event, data=MB_Chl_RL)
+summary(test)
+
+TukeyHSD(test)
+
+```
+## Schmidt Stability
+
+```{r}
+
+MB_SS_RL  <- MB_SS_RL %>%
+  #filter(Ant_Chl_K > 0) %>%
+  mutate(Site = "MB")%>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+
+SA_SS_RL  <- SA_SS_RL %>%
+  #filter(Ant_Chl_K > 0) %>%
+  mutate(Site = "SA")%>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+
+SS_RL_Stat <- full_join(MB_SS_RL, SA_SS_RL)
+
+SS_RL_Stat %>%
+  group_by(Site) %>%
+  summarize(avg_rs = mean(RL),
+            std.rs = sd(RL))
+
+## T-Test between sites: 
+
+shapiro.test(SS_RL_Stat$RL)
+
+test <- wilcox.test(RL ~ Site, data=SS_RL_Stat)
+# The data is not normally distributed. Opt for the Wilcoxon Test.
+
+print(test)
+# the response in chlorophyll is not statistically different.
+
+```
+
+```{r}
+
+# Anova within Sites
+
+## SA
+
+shapiro.test(SA_SS_RL$RL)
+### The data is normally distributed
+
+library(pgirmess)
+
+test <- kruskalmc(RL ~ Event, data=SA_SS_RL)
+
+test$dif.com %>%
+  filter(stat.signif == "TRUE")
+
+## MB
+
+shapiro.test(MB_SS_RL$RL)
+### The data is normally distributed.
+
+test <- kruskalmc(RL ~ Event, data=MB_SS_RL)
+
+test$dif.com %>%
+  filter(stat.signif == "TRUE")
+
+```
+
+
+## Epilimnion Temperature
+
+```{r}
+
+MB_ET_RL  <- MB_ET_RL %>%
+  filter(Ant_ET_K > 0) %>%
+  mutate(Site = "MB") %>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+SA_ET_RL  <- SA_ET_RL %>%
+  filter(Ant_ET_K > 0) %>%
+  mutate(Site = "SA")%>%
+  filter(Event == "HT" | Event == "LT" | Event == "HW" | Event == "LW" | Event == "HF")
+
+ET_RL_Stat <- full_join(MB_ET_RL, SA_ET_RL)
+
+ET_RL_Stat %>%
+  group_by(Site) %>%
+  summarize(avg_rs = mean(RL),
+            std.rs = sd(RL))
+
+## T-Test between sites: 
+
+shapiro.test(ET_RL_Stat$RL)
+
+test <- t.test(RL ~ Site, data=ET_RL_Stat)
+# The data is not normally distributed. Opt for the Wilcoxon Test.
+
+print(test)
+# the response in chlorophyll is not statistically different.
+
+```
+
+P-inflation can occur when you have large groups of comparisons. 
+
+```{r}
+
+# Anova within Sites
+
+## SA
+
+shapiro.test(SA_ET_RL$RL)
+### The data is normally distributed
+
+
+
+test <- aov(RL ~ Event, data=SA_ET_RL)
+summary(test)
+
+TukeyHSD(test)
+
+SA_ET_RL %>%
+  group_by(Event) %>%
+  summarize(avg_rs = mean(RL),
+            sd_rs = sd(RL), 
+            n=n())
+
+## MB
+MB_ET_RL %>%
+  group_by(Event) %>%
+  summarize(avg_rs = mean(RL),
+            sd_rs = sd(RL), 
+            n=n())
+
+shapiro.test(MB_ET_RL$RL)
+### The data is normally distributed.
+
+test <- aov(RL ~ Event, data=MB_ET_RL)
+summary(test)
+
+TukeyHSD(test)
+
+```
+
+
+# Boxplot on the maximum change of variables in the Resistance. 
+
+```{r}
+
+PC_RL_Stat %>% 
+  filter(Ant_PC_K > 0) %>%
+  filter(Event == "HT" | Event == "LT" | Event == "LW" | Event == "HR"| Event == "HW" | Event == "HF") %>%
+  ggplot(aes(y=reorder(Event, PC_Diff, mean), x=PC_Diff, fill=Site)) +
+  geom_vline(xintercept = 0, linetype=2, alpha=0.3)+
+  geom_boxplot(alpha=0.6) +
+  scale_fill_manual(values=c("dodgerblue3", "orangered3"))+
+  theme_classic() +
+  theme(axis.title = element_text(size=11), axis.text=element_text(size=10), legend.text = element_text(size=8),
+        legend.title = element_text(size=10), legend.key.size = unit(0.75, 'cm')) +
+  #xlim(-.25,.25) +
+  xlab("Change in  Phycocyaninn RFU ") +
+  ylab("Event") +
+  ggtitle("A") 
+
+Chl_RL_Stat %>% 
+  filter(Ant_Chl_K > 0) %>%
+  filter(Event == "HT" | Event == "LT" | Event == "LW" | Event == "HR"| Event == "HW" | Event == "HF") %>%
+  ggplot(aes(y=reorder(Event, Chl_Diff, mean), x=Chl_Diff, fill=Site)) +
+  geom_vline(xintercept = 0, linetype=2, alpha=0.3)+
+  geom_boxplot(alpha=0.6) +
+  scale_fill_manual(values=c("dodgerblue3", "orangered3"))+
+  theme_classic() +
+  theme(axis.title = element_text(size=11), axis.text=element_text(size=10), legend.text = element_text(size=8),
+        legend.title = element_text(size=10), legend.key.size = unit(0.75, 'cm')) +
+  #xlim(-.25,.25) +
+  xlab("Change in  Chlorophyll RFU ") +
+  ylab("Event") +
+  ggtitle("A") 
+
+ET_RL_Stat %>% 
+  filter(Ant_ET_K > 0) %>%
+  filter(Event == "HT" | Event == "LT" | Event == "LW" | Event == "HR"| Event == "HW" | Event == "HF") %>%
+  ggplot(aes(y=reorder(Event, ET_Diff, mean), x=ET_Diff, fill=Site)) +
+  geom_vline(xintercept = 0, linetype=2, alpha=0.3)+
+  geom_boxplot(alpha=0.6) +
+  scale_fill_manual(values=c("dodgerblue3", "orangered3"))+
+  theme_classic() +
+  theme(axis.title = element_text(size=11), axis.text=element_text(size=10), legend.text = element_text(size=8),
+        legend.title = element_text(size=10), legend.key.size = unit(0.75, 'cm')) +
+  #xlim(-.25,.25) +
+  xlab("Change in Epi.Temp ") +
+  ylab("Event") +
+  ggtitle("A") 
+
+
+SS_RL_Stat %>% 
+  filter(Event == "HT" | Event == "LT" | Event == "LW" | Event == "HR"| Event == "HW" | Event == "HF") %>%
+  ggplot(aes(y=reorder(Event, SS_Diff, mean), x=SS_Diff, fill=Site)) +
+  geom_vline(xintercept = 0, linetype=2, alpha=0.3)+
+  geom_boxplot(alpha=0.6) +
+  scale_fill_manual(values=c("dodgerblue3", "orangered3"))+
+  theme_classic() +
+  theme(axis.title = element_text(size=11), axis.text=element_text(size=10), legend.text = element_text(size=8),
+        legend.title = element_text(size=10), legend.key.size = unit(0.75, 'cm')) +
+  #xlim(-.25,.25) +
+  xlab("Change in Schmidt Stability") +
+  ylab("Event") +
+  ggtitle("A") 
+
+```
+
+## Statistics for the maximum change: 
+## Run an ANOVA here. 
+
+```{r}
+# Chlorophyll
+Chl_RL_Stat_MB <- Chl_RL_Stat %>% 
+  filter(Ant_Chl_K > 0) %>%
+  filter(Event == "HT" | Event == "LT" | Event == "LW" | Event == "HR"| Event == "HW" | Event == "HF") %>%
+  filter(Site == "MB")
+
+
+shapiro.test(Chl_RL_Stat_MB$Chl_Diff)
+
+Chl_RL_Stat_MB %>%
+  ggplot(aes(Chl_Diff)) +
+  geom_histogram()
+# The data is normally distributed, so we are going to use run an ANOVA. 
+
+test <- aov(Chl_Diff ~ Event, data=Chl_RL_Stat_MB)
+summary(test)
+
+TukeyHSD(test)
+
+
+#### SA
+
+Chl_RL_Stat_SA <- Chl_RL_Stat %>% 
+  filter(Ant_Chl_K > 0) %>%
+  filter(Event == "HT" | Event == "LT" | Event == "LW" | Event == "HR"| Event == "HW" | Event == "HF") %>%
+  filter(Site == "SA")
+
+
+shapiro.test(Chl_RL_Stat_SA$Chl_Diff)
+
+Chl_RL_Stat_SA %>%
+  ggplot(aes(x=Chl_Diff)) +
+  geom_histogram()
+# The data is not normal, so we are going to use the kruskal wallis test. 
+
+test <- kruskal.test(Chl_Diff ~ Event, data=Chl_RL_Stat_SA)
+print(test)
+
+pairwise.wilcox.test(Chl_RL_Stat_SA$Chl_Diff, Chl_RL_Stat_SA$Event,
+                 p.adjust.method = "BH")
+
+
+```
+
+
+```{r}
+
+# phycocyanin
+
+PC_RL_Stat_MB <- PC_RL_Stat %>% 
+  filter(Ant_PC_K > 0) %>%
+  filter(Event == "HT" | Event == "LT" | Event == "LW" | Event == "HR"| Event == "HW" | Event == "HF") %>%
+  filter(Site == "MB")
+
+
+shapiro.test(PC_RL_Stat_MB$PC_Diff)
+
+PC_RL_Stat_MB %>%
+  ggplot(aes(x=PC_Diff)) +
+  geom_histogram()
+# The data is not normal, so we are going to use the kruskal wallis test. 
+
+test <- kruskal.test(PC_Diff ~ Event, data=PC_RL_Stat_MB)
+print(test)
+
+pairwise.wilcox.test(PC_RL_Stat_MB$PC_Diff, PC_RL_Stat_MB$Event,
+                 p.adjust.method = "BH")
+
+
+
+#### SA
+
+
+PC_RL_Stat_SA  <- PC_RL_Stat %>% 
+  filter(Ant_PC_K > 0) %>%
+  filter(Event == "HT" | Event == "LT" | Event == "LW" | Event == "HR"| Event == "HW" | Event == "HF") %>%
+  filter(Site == "SA")
+
+
+shapiro.test(PC_RL_Stat_SA$PC_Diff)
+
+PC_RL_Stat_SA %>%
+  ggplot(aes(x=PC_Diff)) +
+  geom_histogram()
+# The data is not normal, so we are going to use the kruskal wallis test. 
+
+test <- kruskal.test(PC_Diff ~ Event, data=PC_RL_Stat_SA)
+print(test)
+
+pairwise.wilcox.test(PC_RL_Stat_SA$PC_Diff, PC_RL_Stat_SA$Event,
+                 p.adjust.method = "BH")
+
+
+PC_RL_Stat_SA %>%
+  group_by(Event) %>%
+  summarize(mean = mean(PC_Diff),
+            sd = sd(PC_Diff))
+
+```
+
+The pairwise wilcox test shows a significant difference in phycocyanin responses between the high wind and the low wind events.
+
+```{r}
+# Epi Temp
+
+ET_RL_Stat_MB <- ET_RL_Stat %>% 
+  filter(Ant_ET_K > 0) %>%
+  filter(Event == "HT" | Event == "LT" | Event == "LW" | Event == "HR"| Event == "HW" | Event == "HF") %>%
+  filter(Site == "MB")
+
+
+shapiro.test(ET_RL_Stat_MB$ET_Diff)
+
+ET_RL_Stat_MB %>%
+  ggplot(aes(x=ET_Diff)) +
+  geom_histogram()
+# The data is not normal, so we are going to use the kruskal wallis test. 
+
+test <- aov(ET_Diff ~ Event, data=ET_RL_Stat_MB)
+summary(test)
+
+TukeyHSD(test)
+
+ET_RL_Stat_MB %>%
+  group_by(Event) %>%
+  summarize(mean = mean(ET_Diff),
+            sd = sd(ET_Diff))
+
+#### SA
+
+ET_RL_Stat_SA <- ET_RL_Stat %>% 
+  filter(Ant_ET_K > 0) %>%
+  filter(Event == "HT" | Event == "LT" | Event == "LW" | Event == "HR"| Event == "HW" | Event == "HF") %>%
+  filter(Site == "SA")
+
+
+shapiro.test(ET_RL_Stat_SA$ET_Diff)
+
+ET_RL_Stat_SA %>%
+  ggplot(aes(x=ET_Diff)) +
+  geom_histogram()
+
+# The data is normal, so we are going to use the anova here.
+
+test <- aov(ET_Diff ~ Event, data=ET_RL_Stat_SA)
+summary(test)
+
+TukeyHSD(test)
+
+ET_RL_Stat_SA %>%
+  group_by(Event) %>%
+  summarize(mean = mean(ET_Diff),
+            sd = sd(ET_Diff))
+
+```
+
+```{r}
+# Schmidt Stability
+
+SS_RL_Stat_MB <- SS_RL_Stat %>% 
+  filter(Ant_SS_K > 0) %>%
+  filter(Event == "HT" | Event == "LT" | Event == "LW" | Event == "HR"| Event == "HW" | Event == "HF") %>%
+  filter(Site == "MB")
+
+
+shapiro.test(SS_RL_Stat_MB$SS_Diff)
+
+SS_RL_Stat_MB %>%
+  ggplot(aes(x=SS_Diff)) +
+  geom_histogram()
+# The data is not normal, so we are going to use the kruskal wallis test. 
+
+test <- kruskal.test(SS_Diff ~ Event, data=SS_RL_Stat_MB)
+print(test)
+
+pairwise.wilcox.test(SS_RL_Stat_MB$SS_Diff, SS_RL_Stat_MB$Event,
+                 p.adjust.method = "BH")
+
+
+
+#### SA
+
+SS_RL_Stat_SA <- SS_RL_Stat %>% 
+  filter(Ant_SS_K > 0) %>%
+  filter(Event == "HT" | Event == "LT" | Event == "LW" | Event == "HR"| Event == "HW" | Event == "HF") %>%
+  filter(Site == "SA")
+
+
+shapiro.test(SS_RL_Stat_SA$SS_Diff)
+
+SS_RL_Stat_SA %>%
+  ggplot(aes(x=SS_Diff)) +
+  geom_histogram()
+# The data is not normal, so we are going to use the kruskal wallis test. 
+
+test <- kruskal.test(SS_Diff ~ Event, data=SS_RL_Stat_SA)
+print(test)
+
+pairwise.wilcox.test(SS_RL_Stat_SA$SS_Diff, SS_RL_Stat_SA$Event,
+                 p.adjust.method = "BH")
+
+
+SS_RL_Stat_SA %>%
+  group_by(Event) %>%
+  summarize(mean = mean(SS_Diff),
+            sd = sd(SS_Diff))
+
+```

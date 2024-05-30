@@ -1,0 +1,1033 @@
+---
+title: "Identifying Disturbance Events - SA"
+author: "Katelynn"
+date: "2024-05-30"
+output: html_document
+---
+
+# Summary: 
+
+This is a code that was developed to identify extreme climatic events using high-frequency meteorological data in St. Albans Bay, Lake Champlain. 
+
+The events I am identifying are: 
+* Heating Events
+* Cooling Events
+* High Wind Events
+* Low Wind Events 
+* High Stream Flow Events
+
+I then visualize the events over each of the year, and then create a new dataframe of the events.
+
+Note that these visuals are not publication quality, but are for my own data exploration purposes.
+
+## Outline of Analysis: 
+
+### Question 1: What types of disturbance events occur in the shallow, eutrophic bays of Lake Champlain?
+What is their intensity and frequency?
+
+#### Approach: 
+
+Read in libraries and dataframes. 
+```{r, echo=FALSE, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(rLakeAnalyzer)
+library(data.table)
+library(scales)
+library(ggpubr)
+
+## Read in the file. 
+
+SA_Met <- read_csv("..//Clean Data/SA_Met_Clean.csv")
+
+Drought_Data <- read_csv("..//Raw Data/Met/Drought_FranklinCounty.csv") %>%
+  mutate(YearStart = year(ValidStart)) %>%
+  mutate(Sum_Area = D1+D2) %>%
+  select(D1, D2, Sum_Area, ValidStart, ValidEnd, YearStart) %>%
+  filter(YearStart == 2017 | YearStart == 2018 | YearStart == 2021) %>%
+  rename(Start.Date = ValidStart, 
+         End.Date = ValidEnd)
+
+
+SA_SF_MR <- dataRetrieval::importRDB1("https://nwis.waterservices.usgs.gov/nwis/iv/?sites=04292750&parameterCd=00060&startDT=2017-06-01T00:00:00.000-04:00&endDT=2021-10-31T23:59:59.999-04:00&siteStatus=all&format=rdb")  %>%
+  mutate(Year = year(datetime),
+         Month = month(datetime),
+         Day = day(datetime)) %>%
+  dplyr::group_by(Day, Month, Year) %>%
+  dplyr::summarise(Avg_SF = mean(X67354_00060)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  filter(Month >= 6 & Month <= 11)
+
+SA_SF_JB <- dataRetrieval::importRDB1("https://nwis.waterservices.usgs.gov/nwis/iv/?sites=04292810&parameterCd=00060&startDT=2017-06-01T00:00:00.000-04:00&endDT=2021-10-31T23:59:59.999-04:00&siteStatus=all&format=rdb")  %>%
+  mutate(Year = year(datetime),
+         Month = month(datetime),
+         Day = day(datetime)) %>%
+  dplyr::group_by(Day, Month, Year) %>%
+  dplyr::summarise(Avg_SF = mean(X67363_00060)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  filter(Month >= 6 & Month <= 11)
+
+SA_SF <- full_join(SA_SF_MR, SA_SF_JB) %>%
+  dplyr::group_by(Day, Month, Year, Date) %>%
+  dplyr::summarise(Sum_SF = sum(Avg_SF))
+
+SA17_Met <- SA_Met %>%
+  filter(Year == 2017)
+
+SA18_Met <- SA_Met %>%
+  filter(Year == 2018)
+
+SA19_Met <- SA_Met %>%
+  filter(Year == 2019)
+
+SA20_Met <- SA_Met %>%
+  filter(Year == 2020)
+
+SA21_Met <- SA_Met %>%
+  filter(Year == 2021)
+
+
+
+```
+
+#### Temperature
+
+
+```{r echo=FALSE, message=FALSE}
+
+SA17_Temp <- SA17_Met %>%
+  select(-Wind_Speed_m.s) %>%
+  dplyr::group_by(Month, Day, Year, Date) %>%
+  dplyr::summarize(Avg_Temp = mean(Temp))
+
+SA18_Temp <- SA18_Met %>%
+  select(-Wind_Speed_m.s) %>%
+  dplyr::group_by(Month, Day, Year, Date) %>%
+  dplyr::summarize(Avg_Temp = mean(Temp))
+
+SA19_Temp <- SA19_Met %>%
+  select(-Wind_Speed_m.s) %>%
+  dplyr::group_by(Month, Day, Year, Date) %>%
+  dplyr::summarize(Avg_Temp = mean(Temp))
+
+SA20_Temp <- SA20_Met %>%
+  select(-Wind_Speed_m.s) %>%
+  dplyr::group_by(Month, Day, Year, Date) %>%
+  dplyr::summarize(Avg_Temp = mean(Temp))
+
+SA21_Temp <- SA21_Met %>%
+  select(-Wind_Speed_m.s) %>%
+  dplyr::group_by(Month, Day, Year, Date) %>%
+  dplyr::summarize(Avg_Temp = mean(Temp))
+
+
+#####
+
+SA_Temp <- full_join(SA17_Temp, SA18_Temp) %>%
+  full_join(., SA21_Temp) %>%
+  full_join(., SA20_Temp) %>%
+  full_join(., SA19_Temp)
+
+SATemp025 <- SA_Temp %>%
+  ungroup() %>%
+  dplyr::group_by(Month) %>%
+  dplyr::summarize(perc25 = quantile(Avg_Temp, 0.025))
+
+SATemp975 <- SA_Temp %>%
+  ungroup() %>%
+  dplyr::group_by(Month) %>%
+  dplyr::summarize(perc975 = quantile(Avg_Temp, 0.975))
+
+SATemp_Avg <- SA_Temp %>%
+  ungroup() %>%
+  dplyr::group_by(Month) %>%
+  dplyr::summarize(month_low = quantile(Avg_Temp, 0.15),
+                   month_high = quantile(Avg_Temp, 0.85))
+
+SA_Temp_Quants <- full_join(SATemp025, SATemp975) %>%
+  full_join(., SATemp_Avg)
+
+SA_Temp <- left_join(SA_Temp, SA_Temp_Quants)
+
+SA_Temp <- SA_Temp %>%
+  mutate(Event = if_else(Avg_Temp < perc25, "Cooling", "None"),
+         Event = if_else(Avg_Temp > perc975, "Heating", Event))
+
+
+
+# Do the date ranges and cumulative days
+
+SA_Temp_Dates <- SA_Temp %>%
+  ungroup() %>%
+  mutate(Duration_High = if_else(Avg_Temp > month_high, "Yes", "No")) %>%
+  mutate(Duration_Low = if_else(Avg_Temp < month_low, "Yes", "No")) %>%
+  mutate(High.grp = rleid(Duration_High)-1,
+         Low.grp = rleid(Duration_Low)-1) %>%
+  dplyr::group_by(High.grp, Year) %>%
+  mutate(H_Event_Start = min(Date),
+         H_Event_End = max(Date)) %>%
+  ungroup() %>%
+  dplyr::group_by(Low.grp, Year) %>%
+  mutate(L_Event_Start = min(Date),
+         L_Event_End = max(Date)) %>%
+  ungroup() %>%
+  mutate(Event_Start = if_else(Event == "Heating", H_Event_Start, as.Date("2000-01-01")),
+         Event_End = if_else(Event == "Heating", H_Event_End, as.Date("2000-01-01")),
+  Event_Start = if_else(Event == "Cooling", L_Event_Start, Event_Start),
+         Event_End = if_else(Event == "Cooling", L_Event_End, Event_End)) %>%
+  mutate(Cons_Days = as.numeric(Event_End - Event_Start + 1))
+
+
+# Make the data frame
+
+## Start with Low Temperature
+
+Ref.Dates <- SA_Temp_Dates %>%
+  select(Date)
+
+L.Sample.Dates <- SA_Temp_Dates %>%
+  filter(Event == "Cooling") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(L.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+L.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "Cooling")
+
+## High Temperature
+
+Ref.Dates <- SA_Temp_Dates %>%
+  select(Date)
+
+H.Sample.Dates <- SA_Temp_Dates %>%
+  filter(Event == "Heating") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(H.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+H.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "Heating")
+
+## Join them together. 
+
+SA_Temp_Events <- full_join(H.Ref.Dates, L.Ref.Dates)
+
+SA_Temp_Final <- left_join(SA_Temp_Dates, SA_Temp_Events, by="Date") %>%
+  select(-Event.x) %>%
+  rename(Event = Event.y) 
+
+SA_Temp_Final$Event <- replace_na(SA_Temp_Final$Event, "None")
+
+```
+
+##### Figures 
+
+```{r echo=FALSE, message=FALSE}
+
+
+SA17Temp <- SA_Temp_Final %>%
+  filter(Year == 2017) %>%
+  filter(Month>6 & Month < 11) %>%
+  ggplot(aes(x=Date, y=Avg_Temp)) +
+  geom_line() +
+  geom_point(aes(color=Event)) +
+  theme_classic() +
+  scale_color_manual(values=c("dodgerblue3", "orangered3", "black")) +
+  ylab("") +
+  xlab("")+
+  ylim(0,30) +  
+  scale_x_date(breaks=pretty_breaks(n=6))
+
+
+SA18Temp <- SA_Temp_Final %>%
+  filter(Month>6 & Month < 11) %>%
+  filter(Year == 2018) %>%
+  ggplot(aes(x=Date, y=Avg_Temp)) +
+  geom_line() +
+  geom_point(aes(color=Event)) +
+  theme_classic() +
+  scale_color_manual(values=c("dodgerblue3", "orangered3", "black")) +
+  ylab("Average Daily Temperature (C)") +
+  xlab("") +
+  ylim(0,30) +
+  scale_x_date(breaks=pretty_breaks(n=6))
+
+SA19Temp <- SA_Temp_Final %>%
+  filter(Month>6 & Month < 11) %>%
+  filter(Year == 2019) %>%
+  ggplot(aes(x=Date, y=Avg_Temp)) +
+  geom_line() +
+  geom_point(aes(color=Event)) +
+  theme_classic() +
+  scale_color_manual(values=c("orangered3", "black")) +
+  ylab("Average Daily Temperature (C)") +
+  xlab("") +
+  ylim(0,30) +
+  scale_x_date(breaks=pretty_breaks(n=6))
+
+SA20Temp <- SA_Temp_Final %>%
+  filter(Month>6 & Month < 11) %>%
+  filter(Year == 2020) %>%
+  ggplot(aes(x=Date, y=Avg_Temp)) +
+  geom_line() +
+  geom_point(aes(color=Event)) +
+  theme_classic() +
+  scale_color_manual(values=c("dodgerblue3", "orangered3", "black")) +
+  ylab("Average Daily Temperature (C)") +
+  xlab("") +
+  ylim(0,30) +
+  scale_x_date(breaks=pretty_breaks(n=6))
+
+
+SA21Temp <- SA_Temp_Final %>%
+  filter(Month>6 & Month < 11) %>%
+  filter(Year == 2021) %>%
+  ggplot(aes(x=Date, y=Avg_Temp)) +
+  geom_line() +
+  geom_point(aes(color=Event)) +
+  theme_classic() +
+  scale_color_manual(values=c("dodgerblue3", "orangered3", "black")) +
+  ylab("") +
+  xlab("Date") +
+  ylim(0,30) +
+  scale_x_date(breaks=pretty_breaks(n=6))
+
+
+ggarrange(SA17Temp, SA18Temp, SA19Temp, SA20Temp, SA21Temp, ncol=1, nrow=5, common.legend = TRUE, align = "hv")
+
+```
+
+#### Wind Speed
+
+
+```{r echo=FALSE, message=FALSE}
+
+
+# Join together Wind Data Frames...get the events...
+
+SA17_Wind <- SA17_Met %>%
+  select(-Temp) %>%
+  dplyr::group_by(Month, Day, Year, Date) %>%
+  dplyr::summarize(Avg_Wind = mean(Wind_Speed_m.s))
+
+SA18_Wind <- SA18_Met %>%
+  select(-Temp) %>%
+  dplyr::group_by(Month, Day, Year, Date) %>%
+  dplyr::summarize(Avg_Wind = mean(Wind_Speed_m.s))
+
+SA19_Wind <- SA19_Met %>%
+  select(-Temp) %>%
+  dplyr::group_by(Month, Day, Year, Date) %>%
+  dplyr::summarize(Avg_Wind = mean(Wind_Speed_m.s))
+
+SA20_Wind <- SA20_Met %>%
+  select(-Temp) %>%
+  dplyr::group_by(Month, Day, Year, Date) %>%
+  dplyr::summarize(Avg_Wind = mean(Wind_Speed_m.s))
+
+SA21_Wind <- SA21_Met %>%
+  select(-Temp) %>%
+  dplyr::group_by(Month, Day, Year, Date) %>%
+  dplyr::summarize(Avg_Wind = mean(Wind_Speed_m.s))
+
+
+SA_Wind <- full_join(SA17_Wind, SA18_Wind) %>%
+  full_join(., SA21_Wind) %>%
+  full_join(., SA20_Wind) %>%
+  full_join(., SA19_Wind)
+
+
+
+SAWind025 <- quantile(SA_Wind$Avg_Wind, 0.025)
+SAWind975 <- quantile(SA_Wind$Avg_Wind, 0.975)
+
+SAWind15 <- quantile(SA_Wind$Avg_Wind, 0.15)
+SAWind85 <- quantile(SA_Wind$Avg_Wind, 0.85)
+
+SA_Wind <- SA_Wind %>%
+  mutate(Event = if_else(Avg_Wind < SAWind025, "Low Wind", "None"),
+         Event = if_else(Avg_Wind > SAWind975, "High Wind", Event))
+
+# Do the date ranges and cumulative days
+
+SA_Wind_Dates <- SA_Wind %>%
+  ungroup() %>%
+  mutate(Duration_High = if_else(Avg_Wind > SAWind85, "Yes", "No")) %>%
+  mutate(Duration_Low = if_else(Avg_Wind < SAWind15, "Yes", "No")) %>%
+  mutate(High.grp = rleid(Duration_High)-1,
+         Low.grp = rleid(Duration_Low)-1) %>%
+  dplyr::group_by(High.grp, Year) %>%
+  mutate(H_Event_Start = min(Date),
+         H_Event_End = max(Date)) %>%
+  ungroup() %>%
+  dplyr::group_by(Low.grp, Year) %>%
+  mutate(L_Event_Start = min(Date),
+         L_Event_End = max(Date)) %>%
+  ungroup() %>%
+  mutate(Event_Start = if_else(Event == "High Wind", H_Event_Start, as.Date("2000-01-01")),
+         Event_End = if_else(Event == "High Wind", H_Event_End, as.Date("2000-01-01")),
+  Event_Start = if_else(Event == "Low Wind", L_Event_Start, Event_Start),
+         Event_End = if_else(Event == "Low Wind", L_Event_End, Event_End)) %>%
+  mutate(Cons_Days = as.numeric(Event_End - Event_Start + 1))
+
+# Make the data frame
+
+## Start with Low Wind
+
+Ref.Dates <- SA_Wind_Dates %>%
+  select(Date)
+
+L.Sample.Dates <- SA_Wind_Dates %>%
+  filter(Event == "Low Wind") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(L.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+L.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "Low Wind")
+
+## High Wind
+
+Ref.Dates <- SA_Wind_Dates %>%
+  select(Date)
+
+H.Sample.Dates <- SA_Wind_Dates %>%
+  filter(Event == "High Wind") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(H.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+H.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "High Wind")
+
+## Join them together. 
+
+SA_Wind_Events <- full_join(H.Ref.Dates, L.Ref.Dates)
+
+SA_Wind_Final <- left_join(SA_Wind_Dates, SA_Wind_Events, by="Date") %>%
+  select(-Event.x) %>%
+  rename(Event = Event.y)
+
+SA_Wind_Final$Event <- replace_na(SA_Wind_Final$Event, "None")
+
+
+```
+
+##### Figures 
+
+```{r echo=FALSE, message=FALSE}
+########################################
+
+SA17Wind <- SA_Wind_Final %>%
+  filter(Year == 2017) %>%
+  filter(Month>6 & Month < 11) %>%
+  ggplot(aes(x=Date, y=Avg_Wind)) +
+  geom_line() +
+  geom_point(aes(color=Event)) +
+  theme_classic() +
+  scale_color_manual(values=c("orangered3","dodgerblue3", "black")) +
+  ylab("") +
+  xlab("")+
+  ylim(0,10) +
+  scale_x_date(breaks=pretty_breaks(n=6))
+
+
+SA18Wind <- SA_Wind_Final %>%
+  filter(Month>6 & Month < 11) %>%
+  filter(Year == 2018) %>%
+  ggplot(aes(x=Date, y=Avg_Wind)) +
+  geom_line() +
+  geom_point(aes(color=Event)) +
+  theme_classic() +
+  scale_color_manual(values=c("orangered3", "black")) +
+  ylab("Average Wind Speed (m/s)") +
+  xlab("") +
+  ylim(0,10) +
+  scale_x_date(breaks=pretty_breaks(n=6))
+
+
+SA19Wind <- SA_Wind_Final %>%
+  filter(Month>6 & Month < 11) %>%
+  filter(Year == 2019) %>%
+  ggplot(aes(x=Date, y=Avg_Wind)) +
+  geom_line() +
+  geom_point(aes(color=Event)) +
+  theme_classic() +
+  scale_color_manual(values=c("orangered3","dodgerblue3", "black")) +
+  ylab("Average Wind Speed (m/s)") +
+  xlab("") +
+  ylim(0,10) +
+  scale_x_date(breaks=pretty_breaks(n=6))
+
+
+SA20Wind <- SA_Wind_Final %>%
+  filter(Month>6 & Month < 11) %>%
+  filter(Year == 2020) %>%
+  ggplot(aes(x=Date, y=Avg_Wind)) +
+  geom_line() +
+  geom_point(aes(color=Event)) +
+  theme_classic() +
+  scale_color_manual(values=c("orangered3","dodgerblue3", "black")) +
+  ylab("Average Wind Speed (m/s)") +
+  xlab("") +
+  ylim(0,10) +
+  scale_x_date(breaks=pretty_breaks(n=6))
+
+SA21Wind <- SA_Wind_Final %>%
+  filter(Month>6 & Month < 11) %>%
+  filter(Year == 2021) %>%
+  ggplot(aes(x=Date, y=Avg_Wind)) +
+  geom_line() +
+  geom_point(aes(color=Event)) +
+  theme_classic() +
+  scale_color_manual(values=c("dodgerblue3", "black")) +
+  ylab("") +
+  ylim(0,10) +
+  xlab("Date") +
+  scale_x_date(breaks=pretty_breaks(n=6))
+
+
+ggarrange(SA17Wind, SA18Wind, SA19Wind, SA20Wind, SA21Wind, ncol=1, nrow=5, common.legend = TRUE, align = "hv")
+```
+
+#### Stream Flow
+
+```{r echo=FALSE, message=FALSE}
+
+SA_SF_Quant <- SA_SF %>%
+  dplyr::group_by(Year, Month) %>%
+  dplyr::summarize(Quant_97.5 = quantile(Sum_SF, 0.975),
+            Quant_85 = quantile(Sum_SF, 0.85))
+
+SA_SF <- left_join(SA_SF, SA_SF_Quant, by=c("Year", "Month"))
+
+SA_SF <- SA_SF %>%
+  mutate(Event = if_else(Sum_SF > Quant_97.5, "High Flow", "None"))
+
+
+
+# Do the date ranges and cumulative days
+
+
+SF_Dates <- SA_SF %>%
+  ungroup() %>%
+  arrange(ymd(Date)) %>%
+  mutate(Duration_High = if_else(Sum_SF > Quant_85, "Yes", "No")) %>%
+  mutate(High.grp = rleid(Duration_High)-1) %>%
+  dplyr::group_by(High.grp, Year) %>%
+  mutate(Event_Start = min(Date),
+         Event_End = max(Date)) %>%
+  ungroup() %>%
+  mutate(Cons_Days = as.numeric(Event_End - Event_Start + 1))
+
+# Make the data frame
+
+## High Rain
+
+Ref.Dates <- SF_Dates %>%
+  select(Date)
+
+H.Sample.Dates <- SF_Dates %>%
+  filter(Event == "High Flow") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(H.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+H.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "High Flow")
+
+## Join them together. 
+
+SA_SF_Final <- left_join(SF_Dates, H.Ref.Dates, by="Date") %>%
+  select(-Event.x) %>%
+  rename(Event = Event.y)
+
+SA_SF_Final$Event <- replace_na(SA_SF_Final$Event, "None")
+
+
+
+```
+
+##### Figures 
+
+```{r echo=FALSE, message=FALSE}
+SF17_F <- SA_SF_Final %>%
+  filter(Year == 2017) %>%
+  filter(Month>6 & Month < 11) %>%
+  ggplot(aes(x=Date, y=Sum_SF)) +
+  geom_line() +
+  geom_point(aes(color=Event)) +
+  theme_classic() +
+  scale_color_manual(values=c("dodgerblue3", "black")) +
+  ylab("") +
+  xlab("")+
+  scale_x_date(breaks=pretty_breaks(n=6))
+
+
+SF18_F <- SA_SF_Final %>%
+  filter(Month>6 & Month < 11) %>%
+  filter(Year == 2018) %>%
+  ggplot(aes(x=Date, y=Sum_SF)) +
+  geom_line() +
+  geom_point(aes(color=Event)) +
+  theme_classic() +
+  scale_color_manual(values=c("dodgerblue3", "black")) +
+  ylab("Average Precipitation (mm)") +
+  xlab("") +
+  scale_x_date(breaks=pretty_breaks(n=6))
+
+SF19_F <- SA_SF_Final %>%
+  filter(Month>6 & Month < 11) %>%
+  filter(Year == 2019) %>%
+  ggplot(aes(x=Date, y=Sum_SF)) +
+  geom_line() +
+  geom_point(aes(color=Event)) +
+  theme_classic() +
+  scale_color_manual(values=c("dodgerblue3", "black")) +
+  ylab("Average Precipitation (mm)") +
+  xlab("") +
+  scale_x_date(breaks=pretty_breaks(n=6))
+
+SF20_F <- SA_SF_Final %>%
+  filter(Month>6 & Month < 11) %>%
+  filter(Year == 2020) %>%
+  ggplot(aes(x=Date, y=Sum_SF)) +
+  geom_line() +
+  geom_point(aes(color=Event)) +
+  theme_classic() +
+  scale_color_manual(values=c("dodgerblue3", "black")) +
+  ylab("Average Precipitation (mm)") +
+  xlab("") +
+  scale_x_date(breaks=pretty_breaks(n=6))
+
+
+SF21_F <- SA_SF_Final %>%
+  filter(Month>6 & Month < 11) %>%
+  filter(Year == 2021) %>%
+  ggplot(aes(x=Date, y=Sum_SF)) +
+  geom_line() +
+  geom_point(aes(color=Event)) +
+  theme_classic() +
+  scale_color_manual(values=c("dodgerblue3", "black")) +
+  ylab("") +
+  xlab("Date") +
+  scale_x_date(breaks=pretty_breaks(n=6))
+
+```
+
+```{r Precipitation, dev="png", echo=FALSE, message=FALSE}
+
+ggarrange(SF17_F, SF18_F, SF19_F, SF20_F, SF21_F, ncol=1, nrow=5, common.legend = TRUE, align = "hv")
+
+```
+
+
+```{r}
+
+SA_Temp_tab <- SA_Temp_Final %>%
+  select(Date, Event, Cons_Days, Start.Date, End.Date) %>%
+  mutate(Condition = if_else(Event != "None", "Yes", "No")) %>%
+  pivot_wider(names_from = Event, values_from = Condition) %>%
+  select(-None)
+
+SA_Temp_tab$Heating <- replace_na(SA_Temp_tab$Heating, "No")
+SA_Temp_tab$Cooling <- replace_na(SA_Temp_tab$Cooling, "No")
+
+SA_Cooling <- SA_Temp_tab %>%
+  filter(Cooling=="Yes") %>%
+  mutate(Event = "Cooling") %>%
+  select(-Heating, -Cooling)
+
+SA_Heating <- SA_Temp_tab %>%
+  filter(Heating=="Yes") %>%
+  mutate(Event = "Heating")%>%
+  select(-Heating, -Cooling)
+
+
+#### Wind Data 
+
+SA_Wind_tab <- SA_Wind_Final %>%
+  select(Date, Event, Cons_Days, Start.Date, End.Date) %>%
+  mutate(Condition = if_else(Event != "None", "Yes", "No")) %>%
+  pivot_wider(names_from = Event, values_from = Condition) %>%
+  select(-None)
+
+SA_Wind_tab$`Low Wind` <- replace_na(SA_Wind_tab$`Low Wind`, "No")
+SA_Wind_tab$`High Wind` <- replace_na(SA_Wind_tab$`High Wind`, "No")
+
+SA_HighWind <- SA_Wind_tab %>%
+  filter(`High Wind`=="Yes") %>%
+  mutate(Event = "HighWind") %>%
+  select(-`High Wind`, -`Low Wind`)
+
+SA_LowWind <- SA_Wind_tab %>%
+  filter(`Low Wind`=="Yes")  %>%
+  mutate(Event = "LowWind") %>%
+  select(-`High Wind`, -`Low Wind`)
+
+
+#### Precipitation Data
+
+Precip_tab <- SA_SF_Final %>%
+  select(Date, Event, Cons_Days, Start.Date, End.Date) %>%
+  mutate(Condition = if_else(Event != "None", "Yes", "No")) %>%
+  pivot_wider(names_from = Event, values_from = Condition) %>%
+  select(-`None`) 
+
+Precip_tab$`High Flow` <- replace_na(Precip_tab$`High Flow`, "No")
+
+SA_HighFlow <- Precip_tab %>%
+  filter(`High Flow`=="Yes") %>%
+  mutate(Event = "HighFlow") %>%
+  select(-`High Flow`)
+
+
+## Joining each dataframe togehther.,
+
+SA_Dist_Dates <- rbind(SA_Heating, SA_Cooling, SA_HighFlow, SA_HighWind, SA_LowWind) %>%
+  arrange(Date) %>%
+  select(-Cons_Days, -Date) %>%
+  unique() %>%
+  mutate(Next.Event.Start = lead(Start.Date),
+         Next.Event.End = lead(End.Date),
+         Prev.End.Date = lag(End.Date),
+         Overlapped = if_else(Next.Event.Start <= End.Date, "Yes", "No"),
+         Overlapped = if_else(Start.Date <= Prev.End.Date, "Yes", Overlapped)) %>%
+  mutate(ID = rleid(Overlapped)-1) %>%
+  group_by(ID) %>%
+  mutate(New.Start.Date = if_else(Overlapped == "Yes", min(Start.Date), Start.Date),
+         New.End.Date = if_else(Overlapped == "Yes", max(End.Date), End.Date)) %>%
+  group_by(New.Start.Date, New.End.Date) %>%
+  mutate(New.Event = paste0(Event, collapse = "+")) %>%
+  na.omit() %>%
+  select(New.Start.Date, New.End.Date, New.Event) %>%
+  rename(Event_Start = New.Start.Date,
+         Event_End = New.End.Date, 
+         Event = New.Event) %>%
+    mutate(Cons_Days = as.numeric(Event_End - Event_Start + 1)) %>%
+  unique()
+
+unique(SA_Dist_Dates$Event)
+
+SA_Dist_Dates <- SA_Dist_Dates %>%
+  mutate(Event = as.character(Event)) %>%
+  mutate(Event = if_else(Event == "HighFlow", "HF", Event),
+         Event = if_else(Event == "Cooling+HighWind" | Event == "HighWind+Cooling+HighWind" | Event == "HighWind+Cooling", "LT+HW", Event),
+         Event = if_else(Event == "LowWind+Heating" | Event == "LowWind+Heating+LowWind" | Event == "Heating+LowWind", "LW+HT", Event),
+         Event = if_else(Event == "HighFlow+LowWind", "HF+LW", Event),
+         Event = if_else(Event == "LowWind", "LW", Event),
+         Event = if_else(Event == "Heating", "HT", Event),
+         Event = if_else(Event == "Cooling", "LT", Event),
+         Event = if_else(Event == "HighWind", "HW", Event),
+         Event = if_else(Event == "HighRain+HighWind", "HR+HW", Event),
+         Event = if_else(Event == "HighRain+HighWind", "HR+HW", Event),
+         Event = if_else(Event == "HighFlow+HighWind", "HF+HW", Event),
+         Event = if_else(Event == "HighFlow+Heating" | Event == "Heating+HighFlow", "HF+HT", Event),
+         Event = if_else(Event == "HighWind+Heating+HighFlow", "HW+HT+HF", Event),
+         Event = if_else(Event == "HighWind+Heating" | Event == "Heating+HighWind", "HW+HT", Event))
+
+```
+Now we need to be able to add these date intervals back into the the larger dataframe of all the Dates.
+
+This is a long code chunk, and I'm sure there is a more efficient way to do this through loops or something - but this is what we have right now...
+```{r}
+
+SA_Dist <- full_join(SA_Temp_tab, Precip_tab) %>%
+  full_join(., SA_Wind_tab) %>%
+  select(Date) %>%
+  unique()
+
+Ref.Dates <- SA_Dist
+
+HR.Sample.Dates <- SA_Dist_Dates %>%
+  filter(Event == "LT") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(HR.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+HR.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "LT")
+
+## Join them together. 
+
+SA_Dist_Final <- left_join(SA_Dist, HR.Ref.Dates, by="Date")
+
+####
+
+Ref.Dates <- SA_Dist
+
+HR.Sample.Dates <- SA_Dist_Dates %>%
+  filter(Event == "HF") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(HR.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+HR.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "HF")
+
+SA_Dist_Final <- SA_Dist_Final %>%
+  rows_patch(HR.Ref.Dates)
+
+####
+
+Ref.Dates <- SA_Dist
+
+HR.Sample.Dates <- SA_Dist_Dates %>%
+  filter(Event == "LW") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(HR.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+HR.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "LW")
+
+SA_Dist_Final <- SA_Dist_Final %>%
+  rows_patch(HR.Ref.Dates)
+
+
+####
+
+Ref.Dates <- SA_Dist
+
+HR.Sample.Dates <- SA_Dist_Dates %>%
+  filter(Event == "HT") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(HR.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+HR.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "HT")
+
+SA_Dist_Final <- SA_Dist_Final %>%
+  rows_patch(HR.Ref.Dates)
+
+
+
+####
+
+Ref.Dates <- SA_Dist
+
+HR.Sample.Dates <- SA_Dist_Dates %>%
+  filter(Event == "HW") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(HR.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+HR.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "HW")
+
+SA_Dist_Final <- SA_Dist_Final %>%
+  rows_patch(HR.Ref.Dates)
+
+
+####
+
+Ref.Dates <- SA_Dist
+
+HR.Sample.Dates <- SA_Dist_Dates %>%
+  filter(Event == "HF+HT") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(HR.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+HR.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "HF+HT")
+
+SA_Dist_Final <- SA_Dist_Final %>%
+  rows_patch(HR.Ref.Dates)
+
+
+####
+
+Ref.Dates <- SA_Dist
+
+HR.Sample.Dates <- SA_Dist_Dates %>%
+  filter(Event == "HW+HT+HF") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(HR.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+HR.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "HW+HT+HF")
+
+SA_Dist_Final <- SA_Dist_Final %>%
+  rows_patch(HR.Ref.Dates)
+
+####
+
+Ref.Dates <- SA_Dist
+
+HR.Sample.Dates <- SA_Dist_Dates %>%
+  filter(Event == "HW+HT") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(HR.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+HR.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "HW+HT")
+
+SA_Dist_Final <- SA_Dist_Final %>%
+  rows_patch(HR.Ref.Dates)
+
+####
+
+Ref.Dates <- SA_Dist
+
+HR.Sample.Dates <- SA_Dist_Dates %>%
+  filter(Event == "LT+HW") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(HR.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+HR.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "LT+HW")
+
+SA_Dist_Final <- SA_Dist_Final %>%
+  rows_patch(HR.Ref.Dates)
+####
+
+Ref.Dates <- SA_Dist
+
+HR.Sample.Dates <- SA_Dist_Dates %>%
+  filter(Event == "HF+HW") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(HR.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+HR.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "HF+HW")
+
+SA_Dist_Final <- SA_Dist_Final %>%
+  rows_patch(HR.Ref.Dates)
+####
+
+Ref.Dates <- SA_Dist
+
+HR.Sample.Dates <- SA_Dist_Dates %>%
+  filter(Event == "HF+LW") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(HR.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+HR.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "HF+LW")
+
+SA_Dist_Final <- SA_Dist_Final %>%
+  rows_patch(HR.Ref.Dates)
+
+
+
+####
+
+Ref.Dates <- SA_Dist
+
+HR.Sample.Dates <- SA_Dist_Dates %>%
+  filter(Event == "LW+HT") %>%
+  select(Event_Start, Event_End)
+
+setDT(Ref.Dates)[
+  # perform update join 
+  setDT(HR.Sample.Dates), on = .(Date >= Event_Start, Date <= Event_End), 
+  `:=`(Start.Date = Event_Start, End.Date = Event_End)]
+
+HR.Ref.Dates <-  Ref.Dates %>%
+  na.omit() %>%
+  mutate(Event = "LW+HT")
+
+SA_Dist_Final <- SA_Dist_Final %>%
+  rows_patch(HR.Ref.Dates)
+
+
+
+SA_Dist_Final <- SA_Dist_Final %>%
+  rows_patch(HR.Ref.Dates) %>%
+  na.omit() %>%
+  arrange(Date) %>%
+    mutate(Cons_Days = as.numeric(End.Date - Start.Date + 1))
+
+
+SA_Dist_df <- SA_Dist_Final %>%
+  select(-Date) %>%
+  unique()
+
+write.csv(SA_Dist_df, "SA_Disturbances.csv")
+
+```
+
+#### Disturbance Summaries
+
+```{r}
+
+SA_Dist_df %>%
+  mutate(Month = month(Start.Date)) %>%
+  filter(Month > 5 & Month < 11) %>%
+  select(-Month) %>%
+  group_by(Event) %>%
+  summarise(Total = n()) %>%
+  arrange(Total)
+
+```

@@ -1,0 +1,1028 @@
+---
+title: "Effects of ECE on Physical Variables"
+author: "Katelynn"
+date: "2024-05-30"
+output: html_document
+---
+Part 2: How are physical variables affected by the different types of extreme climatic events?
+
+Most of the analyses here were for an older version of this manuscript, but the code is still useful to use. 
+
+## Load Libraries
+```{r}
+library(lubridate)
+library(rLakeAnalyzer)
+library(data.table)
+library(tidyverse)
+
+```
+
+
+# Epilimnion Temperature
+
+##Formatting the Data
+```{r}
+
+SA17_WTemp <- read.csv("..//Clean Data/SA_Profiler_2017_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, Temp_C, Depth) %>%
+  dplyr::group_by(Month, Day, Year, Depth) %>% 
+  dplyr::summarize(Avg_Temp = mean(Temp_C)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date, Depth, Avg_Temp) 
+
+SA18_WTemp <- read.csv("..//Clean Data/SA_Profiler_2018_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, Temp_C, Depth) %>%
+  dplyr::group_by(Month, Day, Year, Depth) %>% 
+  dplyr::summarize(Avg_Temp = mean(Temp_C)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date, Depth, Avg_Temp) 
+
+SA19_WTemp <- read.csv("..//Clean Data/SA_Profiler_2019_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, Temp_C, Depth) %>%
+  dplyr::group_by(Month, Day, Year, Depth) %>% 
+  dplyr::summarize(Avg_Temp = mean(Temp_C)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date, Depth, Avg_Temp) 
+
+SA20_WTemp <- read.csv("..//Clean Data/SA_Profiler_2020_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, Temp_C, Depth) %>%
+  dplyr::group_by(Month, Day, Year, Depth) %>% 
+  dplyr::summarize(Avg_Temp = mean(Temp_C)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date, Depth, Avg_Temp) 
+
+SA21_WTemp <- read.csv("..//Clean Data/SA_Profiler_2021_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, Temp_C, Depth) %>%
+  dplyr::group_by(Month, Day, Year, Depth) %>% 
+  dplyr::summarize(Avg_Temp = mean(Temp_C)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date, Depth, Avg_Temp) 
+
+SA_WTemp <- full_join(SA17_WTemp, SA18_WTemp) %>%
+  full_join(., SA21_WTemp) %>%
+  full_join(., SA20_WTemp) %>%
+  full_join(., SA19_WTemp)
+
+
+SA_bathy <- approx.bathy(Zmax = 12, lkeArea= 7200000, Zmean = 8, method = "voldev", zinterval = 0.5) #Approximates bathymetry (Cone or Voldev)
+
+names(SA_bathy)[2] <- "areas" #Needs this column name to work with rlakeanalyzer
+
+SA.Epi.Temp <- SA_WTemp %>%
+  group_by(Date) %>%
+  na.omit() %>%
+  mutate(Epi.Temp = epi.temperature(wtr = Avg_Temp, depths = Depth, bthA = SA_bathy$areas, bthD = SA_bathy$depths)) %>%
+  select(Date, Epi.Temp) %>%
+  unique()
+
+SA_WTemp_Dist <- full_join(SA.Epi.Temp, SA_Dist_Final, by="Date") 
+
+SA_WTemp_Dist$Cons_Days <- replace_na(SA_WTemp_Dist$Cons_Days, 0)
+SA_WTemp_Dist$Event <- replace_na(SA_WTemp_Dist$Event, "None")
+
+
+#### Make the difference column for Epi Temp - this code takes daily differences...we need three day differences...so we need 3 lag and 3 lead events.
+
+SA_WTemp_Dist <- SA_WTemp_Dist %>%
+  ungroup() %>%
+  mutate(Yest1 = dplyr::lag(Epi.Temp)) %>%
+  mutate(Yest2 = dplyr::lag(Yest1)) %>%
+  mutate(Yest3 = dplyr::lag(Yest2)) %>%
+  mutate(Tomm1 = dplyr::lead(Epi.Temp)) %>%
+  mutate(Tomm2 = dplyr::lead(Tomm1)) %>%
+  mutate(Tomm3 = dplyr::lead(Tomm2)) %>%
+  mutate(Y1_E = dplyr::lag(Event)) %>%
+  mutate(Y2_E = dplyr::lag(Y1_E)) %>%
+  mutate(Y3_E = dplyr::lag(Y2_E)) %>%
+  mutate(T1_E = dplyr::lead(Event)) %>%
+  mutate(T2_E = dplyr::lead(T1_E)) %>%
+  mutate(T3_E = dplyr::lead(T2_E)) %>%
+  select(-Start.Date, -End.Date) %>%
+  na.omit() %>%
+  mutate(ID = rleid(Event)-1) %>%
+  mutate(Avg_Before = (Yest1 + Yest2 + Yest3)/3,
+         Avg_After = (Tomm1 + Tomm2 + Tomm3)/3,
+         Diff = (Tomm1-Yest1)/Yest1) %>%
+  mutate(Remove = if_else(Y1_E == "None" & Y2_E == "None" & Y3_E == "None" &
+                            T1_E == "None" & T2_E == "None" & T3_E == "None", "No", "Yes"))
+
+No_Dist_Epi <- SA_WTemp_Dist %>%
+  filter(Event == "None" & Remove == "No") %>%
+  select(Diff, Date, Event, Cons_Days, Epi.Temp, ID) %>%
+  sample_n(15)
+
+
+Dist_Epi_B <- SA_WTemp_Dist %>%
+  filter(Event != "None") %>%
+  group_by(ID) %>%
+  filter(Date == min(Date)) %>%
+  select(ID, Yest1)
+
+Dist_Epi_A <- SA_WTemp_Dist %>%
+  filter(Event != "None") %>%
+  group_by(ID) %>%
+  filter(Date == max(Date)) %>%
+  select(ID, Tomm1)
+
+Dist_Epi <-full_join(Dist_Epi_A, Dist_Epi_B) %>%
+  mutate(Diff = (Tomm1-Yest1)/Yest1) %>%
+  select(ID, Diff)
+
+SA_Dist_Epi <- left_join(SA_WTemp_Dist, Dist_Epi, by="ID") %>%
+  select(Diff.y, Date, Event, Cons_Days, Epi.Temp) %>%
+  rename(Diff = Diff.y) %>%
+  na.omit() %>%
+  full_join(., No_Dist_Epi) %>%
+  select(-Epi.Temp, -Date, -ID) %>%
+  unique()
+
+  
+```
+##### Making the Figure
+
+```{r}
+
+SA_Dist_Epi %>% 
+  ggplot(aes(x=Diff,y=Event)) +
+  #geom_boxplot()
+  geom_line(aes(group=Event), color="#E7E7E7", linewidth=3.5) + 
+  geom_point(size=3) +
+  geom_vline(xintercept=0)+
+  theme_classic() +
+  theme(legend.position = "none",
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="#989898"),
+        ) +
+  scale_color_manual(values=c("#436685", "#BF2F24"))+
+  xlab("Percent Change in Epilimnion Temperature") +
+  ylab("")
+
+```
+
+##### Running the ANOVA
+```{r}
+
+Dist_Epi_aov <- SA_Dist_Epi %>%
+  mutate(Event = as.character(Event)) %>%
+  mutate(HT = if_else(Event == "HT", "Yes", "No"),
+         LT = if_else(Event == "LT", "Yes", "No"),
+         LW = if_else(Event == "LW", "Yes", "No"),
+         HF = if_else(Event == "HF", "Yes", "No"),
+         HF_HT = if_else(Event == "HF+HT", "Yes", "No"),
+         HW = if_else(Event == "HW", "Yes", "No"),
+         HW_HT_HF = if_else(Event == "HW+HT+HF", "Yes", "No"),
+         HW_HT = if_else(Event == "HW+HT", "Yes", "No"),
+         LT_HW = if_else(Event == "LT+HW", "Yes", "No"),
+         HF_HW = if_else(Event == "HF+HW", "Yes", "No"),
+         HF_LW = if_else(Event == "HF+LW", "Yes", "No"),
+         LW_HT = if_else(Event == "LW+HT", "Yes", "No"))
+
+
+#Statistical Analysis
+
+result = t.test(Diff ~ HT,
+                    data = Dist_Epi_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+
+
+# Printing the results
+print(result)
+
+
+result = t.test(Diff ~ LT,
+                    data = Dist_Epi_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+
+# Printing the results
+print(result)
+
+
+result = t.test(Diff ~ LW,
+                    data = Dist_Epi_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+ 
+# Printing the results
+print(result)
+
+result = t.test(Diff ~ HW,
+                    data = Dist_Epi_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+
+# Printing the results
+print(result)
+
+# Paired Samples Wilcoxon Test
+result = t.test(Diff ~ HF,
+                    data = Dist_Epi_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+
+# Printing the results
+print(result)
+
+
+SA_Dist_Epi %>%
+  group_by(Event) %>%
+  summarize(Avg = mean(Diff),
+            SD = sd(Diff),
+            n = n()) %>%
+  filter(n > 3)
+
+
+```
+
+#### Stability
+
+##### Formatting the Data
+```{r}
+
+SA_bathy <- approx.bathy(Zmax = 12, lkeArea= 7200000, Zmean = 8, method = "voldev", zinterval = 0.5) #Approximates bathymetry (Cone or Voldev)
+names(SA_bathy)[2] <- "areas" #Needs this column name to work with rlakeanalyzer
+
+SA.Schmidt <- SA_WTemp %>%
+  group_by(Date) %>%
+  na.omit() %>%
+  mutate(SS = schmidt.stability(wtr = Avg_Temp, depths = Depth, bthA = SA_bathy$areas, bthD = SA_bathy$depths)) %>%
+  select(Date, SS) %>%
+  unique()
+
+SA_SS_Dist <- full_join(SA.Schmidt, SA_Dist_Final, by="Date") 
+
+SA_SS_Dist$Cons_Days <- replace_na(SA_SS_Dist$Cons_Days, 0)
+SA_SS_Dist$Event <- replace_na(SA_SS_Dist$Event, "None")
+
+
+#### Make the difference column
+
+SA_SS_Dist <- SA_SS_Dist %>%
+  filter(SS > 0) %>%
+  mutate(SS = log(SS)) %>%
+  ungroup() %>%
+  mutate(Yest1 = dplyr::lag(SS)) %>%
+  mutate(Yest2 = dplyr::lag(Yest1)) %>%
+  mutate(Yest3 = dplyr::lag(Yest2)) %>%
+  mutate(Tomm1 = dplyr::lead(SS)) %>%
+  mutate(Tomm2 = dplyr::lead(Tomm1)) %>%
+  mutate(Tomm3 = dplyr::lead(Tomm2)) %>%
+  select(-Start.Date, -End.Date) %>%
+  na.omit() %>%
+  mutate(ID = rleid(Event)-1) %>%
+  mutate(Avg_Before = (Yest1 + Yest2 + Yest3)/3,
+         Avg_After = (Tomm1 + Tomm2 + Tomm3)/3,
+         Diff1 = (Tomm1-Yest1)/Yest1,
+         Diff3 = (Avg_After-Avg_Before)/Avg_Before)
+
+No_Dist_SS <- SA_SS_Dist %>%
+  filter(Event == "None") %>%
+  select(Diff1, Diff3, Date, Event, Cons_Days, SS, ID)  %>%
+  sample_n(15)
+
+
+Dist_SS_D <- SA_SS_Dist %>%
+  filter(Event != "None") %>%
+  group_by(ID) %>%
+  mutate(Avg_SS_D = mean(SS)) %>%
+  select(ID, Event, Avg_SS_D)
+
+Dist_SS_B <- SA_SS_Dist %>%
+  filter(Event != "None") %>%
+  group_by(ID) %>%
+  filter(Date == min(Date)) %>%
+  select(ID, Yest1, Avg_Before, Event)
+
+Dist_SS_A <- SA_SS_Dist %>%
+  filter(Event != "None") %>%
+  group_by(ID) %>%
+  filter(Date == max(Date)) %>%
+  select(ID, Tomm1, Avg_After, Event)
+
+Dist_SS <-full_join(Dist_SS_A, Dist_SS_B) %>%
+  full_join(., Dist_SS_D) %>%
+  mutate(Diff1 = (Tomm1-Yest1)/Yest1,
+         Diff3 = (Avg_After-Avg_Before)/Avg_Before,
+         Diff_D = Avg_SS_D - Avg_Before/Avg_Before) %>%
+  select(ID, Event, Diff1, Diff3, Diff_D)
+
+SA_Dist_SS <- left_join(SA_SS_Dist, Dist_SS, by=c("ID", "Event")) %>%
+  select(Diff1.y, Diff3.y, Diff_D, Date, Event, Cons_Days, SS) %>%
+  rename(Diff1 = Diff1.y,
+           Diff3 = Diff3.y) %>%
+  na.omit() %>%
+  full_join(., No_Dist_SS) %>%
+  select(-SS, -Date, -ID) %>%
+  unique()
+
+```
+##### Making the Figure
+
+```{r}
+
+SA_Dist_SS %>% 
+  ggplot(aes(x=Diff1,y=Event)) +
+  #geom_boxplot()
+  geom_line(aes(group=Event), color="#E7E7E7", linewidth=3.5) + 
+  geom_point(size=3) +
+  geom_vline(xintercept=0)+
+  theme_classic() +
+  theme(legend.position = "none",
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="#989898"),
+        ) +
+  scale_color_manual(values=c("#436685", "#BF2F24"))+
+  xlab("Change in  Schmidt Stability") +
+  ylab("")
+
+```
+
+##### Running the ANOVA
+
+```{r}
+
+Dist_SS_aov <- SA_Dist_SS %>%
+ mutate(Event = as.character(Event)) %>%
+  mutate(HT = if_else(Event == "HT", "Yes", "No"),
+         LT = if_else(Event == "LT", "Yes", "No"),
+         LW = if_else(Event == "LW", "Yes", "No"),
+         HF = if_else(Event == "HF", "Yes", "No"),
+         HF_HT = if_else(Event == "HF+HT", "Yes", "No"),
+         HW = if_else(Event == "HW", "Yes", "No"),
+         HW_HT_HF = if_else(Event == "HW+HT+HF", "Yes", "No"),
+         HW_HT = if_else(Event == "HW+HT", "Yes", "No"),
+         LT_HW = if_else(Event == "LT+HW", "Yes", "No"),
+         HF_HW = if_else(Event == "HF+HW", "Yes", "No"),
+         HF_LW = if_else(Event == "HF+LW", "Yes", "No"),
+         LW_HT = if_else(Event == "LW+HT", "Yes", "No"))
+
+#Statistical Analysis
+
+result = t.test(Diff1 ~ HT,
+                    data = Dist_SS_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+ 
+print(result)
+
+
+
+result = wilcox.test(Diff1 ~ LT,
+                    data = Dist_SS_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+
+# Printing the results
+print(result)
+
+
+result = t.test(Diff1 ~ LW,
+                    data = Dist_SS_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+ 
+# Printing the results
+print(result)
+
+
+
+result = t.test(Diff1 ~ HW, 
+                    data = Dist_SS_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+
+# Printing the results
+print(result)
+
+
+result = t.test(Diff1 ~ HF,
+                    data = Dist_SS_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+
+# Printing the results
+print(result)
+
+
+
+SA_Dist_SS %>%
+  filter(Diff1 <= 10 & Diff1 >= -10) %>%
+  group_by(Event) %>%
+  summarize(Avg = mean(Diff1),
+            SD = sd(Diff1),
+            n = n()) %>%
+  filter(n > 3)
+
+
+```
+# Phycocyanin
+
+## Formating Data
+
+```{r}
+
+SA18_PC <- read.csv("..//Clean Data/SA_Profiler_2018_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, PC_RFU, Depth) %>%
+  filter(Depth > 1.5) %>%
+  na.omit() %>%
+  group_by(Month, Day, Year) %>% 
+  summarize(Avg_PC = mean(PC_RFU)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date, Avg_PC)
+
+SA17_PC <- read.csv("..//Clean Data/SA_Profiler_2017_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, PC_RFU, Depth) %>%
+  filter(Depth > 1.5) %>%
+  na.omit() %>%
+  group_by(Month, Day, Year) %>% 
+  summarize(Avg_PC = mean(PC_RFU)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date, Avg_PC) 
+
+SA19_PC <- read.csv("..//Clean Data/SA_Profiler_2019_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, PC_RFU, Depth) %>%
+  filter(Depth > 1.5) %>%
+  na.omit() %>%
+  group_by(Month, Day, Year) %>% 
+  summarize(Avg_PC = mean(PC_RFU)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date, Avg_PC) 
+
+SA20_PC <- read.csv("..//Clean Data/SA_Profiler_2020_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, PC_RFU, Depth) %>%
+  filter(Depth > 1.5) %>%
+  na.omit() %>%
+  group_by(Month, Day, Year) %>% 
+  summarize(Avg_PC = mean(PC_RFU)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date, Avg_PC) 
+
+
+SA21_PC <- read.csv("..//Clean Data/SA_Profiler_2021_Clean.csv") %>%
+  filter(Depth > 1.5) %>%
+  dplyr::select(datetime, Month, Day, Year, PC_RFU, Depth) %>%
+  na.omit() %>%
+  group_by(Month, Day, Year) %>% 
+  summarize(Avg_PC = mean(PC_RFU)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date,  Avg_PC) 
+
+SA_PC <- full_join(SA18_PC, SA17_PC) %>%
+  full_join(., SA21_PC) %>%
+  full_join(., SA20_PC) %>%
+  full_join(., SA19_PC)
+
+
+
+SA_PC_Dist <- full_join(SA_PC, SA_Dist_Final, by="Date") 
+
+SA_PC_Dist$Cons_Days <- replace_na(SA_PC_Dist$Cons_Days, 0)
+SA_PC_Dist$Event <- replace_na(SA_PC_Dist$Event, "None")
+
+
+SA_PC_Dist <- SA_PC_Dist %>%
+  mutate(Yest1 = dplyr::lag(Avg_PC)) %>%
+  mutate(Yest2 = dplyr::lag(Yest1)) %>%
+  mutate(Yest3 = dplyr::lag(Yest2)) %>%
+  mutate(Tomm1 = dplyr::lead(Avg_PC)) %>%
+  mutate(Tomm2 = dplyr::lead(Tomm1)) %>%
+  mutate(Tomm3 = dplyr::lead(Tomm2)) %>%
+  select(-Start.Date, -End.Date) %>%
+  na.omit() %>%
+  mutate(ID = rleid(Event)-1) %>%
+  mutate(Avg_Before = (Yest1 + Yest2 + Yest3)/3,
+         Avg_After = (Tomm1 + Tomm2 + Tomm3)/3,
+         Diff1 = (Tomm1-Yest1)/Yest1,
+         Diff3 = (Avg_After-Avg_Before)/Avg_Before)
+
+No_Dist_PC <- SA_PC_Dist %>%
+  filter(Event == "None") %>%
+  select(Diff1, Diff3, Date, Event, Cons_Days, Avg_PC, ID) %>%
+  sample_n(15)
+
+Dist_PC_D <- SA_PC_Dist %>%
+  filter(Event != "None") %>%
+  group_by(ID) %>%
+  mutate(Avg_PC_D = mean(Avg_PC)) %>%
+  select(ID, Event, Avg_PC_D)
+
+Dist_PC_B <- SA_PC_Dist %>%
+  filter(Event != "None") %>%
+  group_by(ID) %>%
+  filter(Date == min(Date)) %>%
+  select(ID, Yest1, Avg_Before)
+
+Dist_PC_A <- SA_PC_Dist %>%
+  filter(Event != "None") %>%
+  group_by(ID) %>%
+  filter(Date == max(Date)) %>%
+  select(ID, Tomm1, Avg_After)
+
+Dist_PC <-full_join(Dist_PC_A, Dist_PC_B) %>%
+  full_join(., Dist_PC_D) %>%
+  mutate(Diff1 = (Tomm1-Yest1)/Yest1,
+         Diff3 = (Avg_After-Avg_Before)/Avg_Before,
+         Diff_D = sum(Avg_PC_D)) %>%
+  select(ID, Diff1, Diff3, Diff_D)
+
+SA_Dist_PC <- left_join(SA_PC_Dist, Dist_PC, by="ID") %>%
+  select(Diff1.y, Diff3.y, Diff_D, Date, Event, Cons_Days, Avg_PC) %>%
+  rename(Diff1 = Diff1.y,
+         Diff3 = Diff3.y) %>%
+  na.omit() %>%
+  full_join(., No_Dist_PC) %>%
+  select(-Avg_PC, -Date, -ID) %>%
+  unique()
+
+
+```
+
+##### Making the Figure
+
+```{r}
+SA_Dist_PC %>% 
+  filter(Diff1 < 10) %>%
+  ggplot(aes(x=Diff1,y=Event)) +
+  #geom_boxplot()
+  geom_line(aes(group=Event), color="#E7E7E7", linewidth=3.5) + 
+  geom_point(size=3) +
+  geom_vline(xintercept=0)+
+  theme_classic() +
+  theme(legend.position = "none",
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="#989898"),
+        ) +
+  scale_color_manual(values=c("#436685", "#BF2F24"))+
+  xlab("Change in  Phycocyanin RFU") +
+  ylab("")
+
+```
+
+##### Running the ANOVA
+
+```{r}
+
+Dist_PC_aov <- SA_Dist_PC %>%
+  mutate(Event = as.character(Event)) %>%
+  mutate(HT = if_else(Event == "HT", "Yes", "No"),
+         LT = if_else(Event == "LT", "Yes", "No"),
+         LW = if_else(Event == "LW", "Yes", "No"),
+         HF = if_else(Event == "HF", "Yes", "No"),
+         HF_HT = if_else(Event == "HF+HT", "Yes", "No"),
+         HW = if_else(Event == "HW", "Yes", "No"),
+         HW_HT_HF = if_else(Event == "HW+HT+HF", "Yes", "No"),
+         HW_HT = if_else(Event == "HW+HT", "Yes", "No"),
+         LT_HW = if_else(Event == "LT+HW", "Yes", "No"),
+         HF_HW = if_else(Event == "HF+HW", "Yes", "No"),
+         HF_LW = if_else(Event == "HF+LW", "Yes", "No"),
+         LW_HT = if_else(Event == "LW+HT", "Yes", "No"))
+
+
+#Statistical Analysis
+
+result = t.test(Diff1 ~ HT,
+                    data = Dist_PC_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+ 
+
+# Printing the results
+print(result)
+
+result = t.test(Diff1 ~ LT,
+                    data = Dist_PC_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+
+# Printing the results
+print(result)
+
+result = t.test(Diff1 ~ LW,
+                    data = Dist_PC_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+ 
+# Printing the results
+print(result)
+
+
+result = t.test(Diff1 ~ HW,
+                    data = Dist_PC_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+
+# Printing the results
+print(result)
+
+
+result = t.test(Diff1 ~ HF,
+                    data = Dist_PC_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+
+# Printing the results
+print(result)
+
+SA_Dist_PC %>%
+  group_by(Event) %>%
+  summarize(Avg = mean(Diff1),
+            SD = sd(Diff1),
+            n = n()) %>%
+  filter(n > 4)
+
+```
+
+
+#### Chlorophyll
+
+```{r}
+
+SA18_Chl <- read.csv("..//Clean Data/SA_Profiler_2018_Clean.csv") %>%
+  select(datetime, Month, Day, Year, Chl_RFU, Depth) %>%
+  filter(Depth > 1.5) %>%
+  na.omit() %>%
+  group_by(Month, Day, Year) %>% 
+  summarize(Avg_Chl = mean(Chl_RFU)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  select(Date, Avg_Chl) 
+
+SA17_Chl <- read.csv("..//Clean Data/SA_Profiler_2017_Clean.csv") %>%
+  select(datetime, Month, Day, Year, Chl_RFU, Depth) %>%
+  filter(Depth > 1.5) %>%
+  na.omit() %>%
+  group_by(Month, Day, Year) %>% 
+  summarize(Avg_Chl = mean(Chl_RFU)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  select(Date, Avg_Chl) 
+
+SA19_Chl <- read.csv("..//Clean Data/SA_Profiler_2019_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, Chl_RFU, Depth) %>%
+  filter(Depth > 1.5) %>%
+  na.omit() %>%
+  group_by(Month, Day, Year) %>% 
+  summarize(Avg_Chl = mean(Chl_RFU)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  select(Date, Avg_Chl) 
+
+SA20_Chl <- read.csv("..//Clean Data/SA_Profiler_2020_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, Chl_RFU, Depth) %>%
+  filter(Depth > 1.5) %>%
+  na.omit() %>%
+  group_by(Month, Day, Year) %>% 
+  summarize(Avg_Chl = mean(Chl_RFU)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date, Avg_Chl) 
+
+
+SA21_Chl <- read.csv("..//Clean Data/SA_Profiler_2021_Clean.csv") %>%
+  select(datetime, Month, Day, Year, Chl_RFU, Depth) %>%
+  filter(Depth > 1.5) %>%
+  na.omit() %>%
+  group_by(Month, Day, Year) %>% 
+  summarize(Avg_Chl = mean(Chl_RFU)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  select(Date, Avg_Chl) 
+
+SA_Chl <- full_join(SA18_Chl, SA17_Chl) %>%
+  full_join(., SA19_Chl) %>%
+  full_join(., SA20_Chl) %>%
+  full_join(., SA21_Chl)
+
+
+SA_Chl_Dist <- full_join(SA_Chl, SA_Dist_Final, by="Date") 
+
+SA_Chl_Dist$Cons_Days <- replace_na(SA_Chl_Dist$Cons_Days, 0)
+SA_Chl_Dist$Event <- replace_na(SA_Chl_Dist$Event, "None")
+
+
+SA_Chl_Dist <- SA_Chl_Dist %>%
+  ungroup() %>%
+  mutate(Yest1 = dplyr::lag(Avg_Chl)) %>%
+  mutate(Yest2 = dplyr::lag(Yest1)) %>%
+  mutate(Yest3 = dplyr::lag(Yest2)) %>%
+  mutate(Tomm1 = dplyr::lead(Avg_Chl)) %>%
+  mutate(Tomm2 = dplyr::lead(Tomm1)) %>%
+  mutate(Tomm3 = dplyr::lead(Tomm2)) %>%
+  select(-Start.Date, -End.Date) %>%
+  na.omit() %>%
+  mutate(ID = rleid(Event)-1) %>%
+  mutate(Avg_Before = (Yest1 + Yest2 + Yest3)/3,
+         Avg_After = (Tomm1 + Tomm2 + Tomm3)/3,
+         Diff1 = (Tomm1-Yest1)/Yest1,
+         Diff3 = (Avg_After-Avg_Before)/Avg_Before)
+
+No_Dist_Chl <- SA_Chl_Dist %>%
+  filter(Event == "None") %>%
+  select(Diff1, Diff3, Date, Event, Cons_Days, Avg_Chl, ID) %>%
+  sample_n(15)
+
+Dist_Chl_B <- SA_Chl_Dist %>%
+  filter(Event != "None") %>%
+  group_by(ID) %>%
+  filter(Date == min(Date)) %>%
+  select(ID, Avg_Before, Yest1)
+
+Dist_Chl_A <- SA_Chl_Dist %>%
+  filter(Event != "None") %>%
+  group_by(ID) %>%
+  filter(Date == max(Date)) %>%
+  select(ID, Avg_After, Tomm1)
+
+Dist_Chl <-full_join(Dist_Chl_A, Dist_Chl_B) %>%
+  mutate(Diff1 = (Tomm1-Yest1)/Yest1,
+         Diff3 = (Avg_After-Avg_Before)/Avg_Before) %>%
+  select(ID, Diff1, Diff3)
+
+SA_Dist_Chl <- left_join(SA_Chl_Dist, Dist_Chl, by="ID") %>%
+  select(Diff1.y, Diff3.y, Date, Event, Cons_Days, Avg_Chl) %>%
+  rename(Diff1 = Diff1.y, 
+         Diff3 = Diff3.y) %>%
+  na.omit() %>%
+  full_join(., No_Dist_Chl) %>%
+  select(-Avg_Chl, -Date, -ID) %>%
+  unique()
+
+
+```
+##### Making the Figure
+
+```{r}
+SA_Dist_Chl %>% 
+  #filter(Event != "None") %>
+  ggplot(aes(x=Diff1,y=Event)) +
+  #geom_boxplot()
+  geom_line(aes(group=Event), color="#E7E7E7", linewidth=3.5) + 
+  geom_point(size=3) +
+  geom_vline(xintercept=0)+
+  theme_classic() +
+  theme(legend.position = "none",
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="#989898"),
+        ) +
+  scale_color_manual(values=c("#436685", "#BF2F24"))+
+  xlab("Change in  Chlorophyll RFU") +
+  ylab("")
+
+```
+##### Running the ANOVA
+
+```{r}
+
+Dist_Chl_aov <- SA_Dist_Chl %>%
+   mutate(Event = as.character(Event)) %>%
+  mutate(HT = if_else(Event == "HT", "Yes", "No"),
+         LT = if_else(Event == "LT", "Yes", "No"),
+         LW = if_else(Event == "LW", "Yes", "No"),
+         HF = if_else(Event == "HF", "Yes", "No"),
+         HF_HT = if_else(Event == "HF+HT", "Yes", "No"),
+         HW = if_else(Event == "HW", "Yes", "No"),
+         HW_HT_HF = if_else(Event == "HW+HT+HF", "Yes", "No"),
+         HW_HT = if_else(Event == "HW+HT", "Yes", "No"),
+         LT_HW = if_else(Event == "LT+HW", "Yes", "No"),
+         HF_HW = if_else(Event == "HF+HW", "Yes", "No"),
+         HF_LW = if_else(Event == "HF+LW", "Yes", "No"),
+         LW_HT = if_else(Event == "LW+HT", "Yes", "No"))
+
+
+# Two sided t-tests
+
+result = t.test(Diff1 ~ HT,
+                    data = Dist_Chl_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+ 
+## Now this is very significant. 
+
+# Printing the results
+print(result)
+
+result = t.test(Diff1 ~ LT,
+                    data = Dist_Chl_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+
+
+print(result)
+
+
+result = t.test(Diff1 ~ LW,
+                    data = Dist_Chl_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+ 
+# Printing the results
+print(result)
+
+
+
+
+result = t.test(Diff1 ~ HW,
+                    data = Dist_Chl_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+
+# Printing the results
+print(result)
+
+
+result = t.test(Diff1 ~ HF,
+                    data = Dist_Chl_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+
+# Printing the results
+print(result)
+
+
+
+result = t.test(Diff1 ~ HF_LW,
+                    data = Dist_Chl_aov,
+                    paired = FALSE,
+                    alternative = "two.sided")
+
+# Printing the results
+print(result)
+
+
+SA_Dist_Chl %>%
+  group_by(Event) %>%
+  summarize(Avg = mean(Diff1),
+            SD = sd(Diff1),
+            n = n()) %>%
+  filter(n > 4)
+
+```
+
+
+#### Turbidity
+
+```{r}
+SA18_Turb <- read.csv("..//Clean Data/SA_Profiler_2018_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, Turbid, Depth) %>%
+  na.omit() %>%
+  group_by(Month, Day, Year) %>% 
+  summarize(Avg_Turbid = mean(Turbid)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date, Avg_Turbid) 
+
+SA17_Turb <- read.csv("..//Clean Data/SA_Profiler_2017_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, Turbid, Depth) %>%
+  na.omit() %>%
+  group_by(Month, Day, Year) %>% 
+  summarize(Avg_Turbid = mean(Turbid)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date, Avg_Turbid) 
+
+SA19_Turb <- read.csv("..//Clean Data/SA_Profiler_2019_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, Turbid, Depth) %>%
+  na.omit() %>%
+  group_by(Month, Day, Year) %>% 
+  summarize(Avg_Turbid = mean(Turbid)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date, Avg_Turbid) 
+
+
+SA20_Turb <- read.csv("..//Clean Data/SA_Profiler_2020_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, Turbid, Depth) %>%
+  na.omit() %>%
+  group_by(Month, Day, Year) %>% 
+  summarize(Avg_Turbid = mean(Turbid)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date, Avg_Turbid) 
+
+
+SA21_Turb <- read.csv("..//Clean Data/SA_Profiler_2021_Clean.csv") %>%
+  dplyr::select(datetime, Month, Day, Year, Turbid, Depth) %>%
+  na.omit() %>%
+  group_by(Month, Day, Year) %>% 
+  summarize(Avg_Turbid = mean(Turbid)) %>%
+  mutate(Date = make_date(Year, Month, Day)) %>%
+  ungroup() %>%
+  dplyr::select(Date, Avg_Turbid) 
+
+
+SA_Turb <- full_join(SA18_Turb, SA17_Turb) %>%
+  full_join(., SA21_Turb) %>%
+  full_join(., SA19_Turb) %>%
+  full_join(., SA20_Turb)
+
+
+SA_Turb_Dist <- full_join(SA_Turb, SA_Dist_Final, by="Date") 
+
+SA_Turb_Dist$Cons_Days <- replace_na(SA_Turb_Dist$Cons_Days, 0)
+SA_Turb_Dist$Event <- replace_na(SA_Turb_Dist$Event, "None")
+
+
+SA_Turb_Dist <- SA_Turb_Dist %>%
+  ungroup() %>%
+  mutate(Yest1 = dplyr::lag(Avg_Turbid)) %>%
+  mutate(Yest2 = dplyr::lag(Yest1)) %>%
+  mutate(Yest3 = dplyr::lag(Yest2)) %>%
+  mutate(Tomm1 = dplyr::lead(Avg_Turbid)) %>%
+  mutate(Tomm2 = dplyr::lead(Tomm1)) %>%
+  mutate(Tomm3 = dplyr::lead(Tomm2)) %>%
+  select(-Start.Date, -End.Date) %>%
+  na.omit() %>%
+  mutate(ID = rleid(Event)-1) %>%
+  mutate(Avg_Before = (Yest1 + Yest2 + Yest3)/3,
+         Avg_After = (Tomm1 + Tomm2 + Tomm3)/3,
+         Diff = Avg_After-Avg_Before)
+
+No_Dist_Turb <- SA_Turb_Dist %>%
+  filter(Event == "None") %>%
+  select(Diff, Date, Event, Cons_Days, Avg_Turbid, ID) 
+
+
+Dist_Turb_B <- SA_Turb_Dist %>%
+  filter(Event != "None") %>%
+  group_by(ID) %>%
+  filter(Date == min(Date)) %>%
+  select(ID, Avg_Before)
+
+Dist_Turb_A <- SA_Turb_Dist %>%
+  filter(Event != "None") %>%
+  group_by(ID) %>%
+  filter(Date == max(Date)) %>%
+  select(ID, Avg_After)
+
+Dist_Turb <-full_join(Dist_Turb_A, Dist_Turb_B) %>%
+  mutate(Diff = Avg_After - Avg_Before) %>%
+  select(ID, Diff)
+
+Dist_Turb <- left_join(SA_Turb_Dist, Dist_Turb, by="ID") %>%
+  select(Diff.y, Date, Event, Cons_Days, Avg_Turbid) %>%
+  rename(Diff = Diff.y) %>%
+  na.omit() %>%
+  full_join(., No_Dist_Turb) 
+
+
+```
+
+##### Making the Figure
+
+```{r}
+Dist_Turb %>% 
+  select(Event, Diff, ID) %>%
+  unique() %>%
+  ggplot(aes(x=Diff,y=Event)) +
+  #geom_boxplot()
+  geom_line(aes(group=Event), color="#E7E7E7", linewidth=3.5) + 
+  geom_point(size=3) +
+  geom_vline(xintercept=0)+
+  theme_classic() +
+  theme(legend.position = "none",
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="#989898"),
+        ) +
+  scale_color_manual(values=c("#436685", "#BF2F24"))+
+  xlab("Change in  Turbidity") +
+  ylab("")
+
+```
+##### Running the ANOVA
+
+```{r}
+
+Dist_Turb_aov <- Dist_Turb %>%
+  mutate(Event = as.character(Event)) %>%
+  select(Event, Diff, Date) %>%
+  unique() %>%
+  mutate(HT = if_else(Event == "HT", "Yes", "No"),
+         LT = if_else(Event == "LT", "Yes", "No"),
+         LW = if_else(Event == "LW", "Yes", "No"),
+         HF = if_else(Event == "HF", "Yes", "No"),
+         HF_HT = if_else(Event == "HF+HT", "Yes", "No"),
+         HW = if_else(Event == "HW", "Yes", "No"),
+         HW_HT_HF = if_else(Event == "HW+HT+HF", "Yes", "No"),
+         HW_HT = if_else(Event == "HW+HT", "Yes", "No"),
+         LT_HW = if_else(Event == "LT+HW", "Yes", "No"),
+         HF_HW = if_else(Event == "HF+HW", "Yes", "No"),
+         HF_LW = if_else(Event == "HF+LW", "Yes", "No"),
+         LW_HT = if_else(Event == "LW+HT", "Yes", "No"))
+  select(-Event, -Date)
+
+
+aov <- aov(Diff ~ ., data=Dist_Turb_aov)
+summary(aov)
+
+```
